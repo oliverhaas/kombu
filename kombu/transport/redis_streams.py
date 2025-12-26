@@ -229,6 +229,9 @@ class QoS(virtual.QoS):
             stream, message_id, group_name = metadata
             self.channel.client.xack(stream, group_name, message_id)
             self._delivery_metadata.pop(delivery_tag, None)
+        else:
+            crit('Cannot ack message: metadata not found for delivery_tag %r',
+                 delivery_tag, exc_info=True)
 
         super().ack(delivery_tag)
 
@@ -270,6 +273,9 @@ class QoS(virtual.QoS):
                 client.xack(stream, group_name, message_id)
 
             self._delivery_metadata.pop(delivery_tag, None)
+        else:
+            crit('Cannot reject message: metadata not found for delivery_tag %r',
+                 delivery_tag, exc_info=True)
 
         super().ack(delivery_tag)
 
