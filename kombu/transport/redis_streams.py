@@ -842,10 +842,15 @@ class Channel(virtual.Channel):
             for pri in reversed(self.priority_steps):  # Reverse for high-to-low priority
                 for queue in queues:
                     stream_key = self._stream_for_pri(queue, pri)
-                    # Ensure consumer group exists
-                    self._ensure_consumer_group(stream_key)
-                    streams[stream_key] = '>'  # '>' means new messages
-                    queue_to_group[stream_key] = self.consumer_group
+                    # Add prefix if needed (for manual send_command)
+                    prefixed_stream_key = stream_key
+                    if self.global_keyprefix:
+                        prefixed_stream_key = self.global_keyprefix + stream_key
+
+                    # Ensure consumer group exists (use prefixed key)
+                    self._ensure_consumer_group(prefixed_stream_key)
+                    streams[prefixed_stream_key] = '>'  # '>' means new messages
+                    queue_to_group[prefixed_stream_key] = self.consumer_group
 
         # Add fanout streams
         for queue in self.active_fanout_queues:
@@ -854,10 +859,15 @@ class Channel(virtual.Channel):
                 stream_key = self._fanout_stream_key(exchange, routing_key)
                 group_name = self._fanout_consumer_group(queue)
 
-                # Ensure consumer group exists
-                self._ensure_consumer_group(stream_key, group_name)
-                streams[stream_key] = '>'
-                queue_to_group[stream_key] = group_name
+                # Add prefix if needed
+                prefixed_stream_key = stream_key
+                if self.global_keyprefix:
+                    prefixed_stream_key = self.global_keyprefix + stream_key
+
+                # Ensure consumer group exists (use prefixed key)
+                self._ensure_consumer_group(prefixed_stream_key, group_name)
+                streams[prefixed_stream_key] = '>'
+                queue_to_group[prefixed_stream_key] = group_name
 
         if not streams:
             return
@@ -868,6 +878,31 @@ class Channel(virtual.Channel):
         self._pending_timeout = timeout
         self._pending_queues = queues
         self._pending_queue_to_group = queue_to_group
+
+        # Send XREADGROUP command (async operation)
+        # Group streams by consumer group and send command for first group
+        groups = {}
+        for stream_key, stream_id in streams.items():
+            group_name = queue_to_group[stream_key]
+            if group_name not in groups:
+                groups[group_name] = {}
+            groups[group_name][stream_key] = stream_id
+
+        # Send command for first consumer group
+        # (limitation: we can only monitor one group at a time with this approach)
+        if groups:
+            first_group = next(iter(groups.keys()))
+            group_streams = groups[first_group]
+
+            # Build XREADGROUP command (stream keys are already prefixed in groups dict)
+            command_args = ['XREADGROUP', 'GROUP', first_group, self.consumer_id,
+                            'COUNT', '1',
+                            'BLOCK', str(int(timeout * 1000) if timeout else 0),
+                            'STREAMS']
+            command_args.extend(group_streams.keys())
+            command_args.extend(group_streams.values())
+
+            self.client.connection.send_command(*command_args)
 
     def _get_queue_name_for_fanout(self, stream_str):
         """Find queue name for a fanout stream."""
@@ -919,36 +954,35 @@ class Channel(virtual.Channel):
                 if not self._pending_streams:
                     raise Empty()
 
-                # Group streams by consumer group
-                groups = {}
-                for stream_key, stream_id in self._pending_streams.items():
-                    group_name = self._pending_queue_to_group[stream_key]
-                    if group_name not in groups:
-                        groups[group_name] = {}
-                    groups[group_name][stream_key] = stream_id
+                # Parse response from XREADGROUP command sent in _xreadgroup_start
+                messages = self.client.parse_response(
+                    self.client.connection,
+                    'XREADGROUP',
+                    **options
+                )
 
-                # Try each consumer group until we get a message
-                for group_name, group_streams in groups.items():
-                    messages = self.client.xreadgroup(
-                        groupname=group_name,
-                        consumername=self.consumer_id,
-                        streams=group_streams,
-                        count=1,  # Get one message at a time
-                        block=int(self._pending_timeout * 1000) if self._pending_timeout else 0
-                    )
+                if not messages:
+                    raise Empty()
 
-                    if not messages:
+                # Process first message
+                # messages format: [(stream_name, [(message_id, {fields})])]
+                for stream, message_list in messages:
+                    if not message_list:
                         continue
 
-                    # Process first message
-                    # messages format: [(stream_name, [(message_id, {fields})])]
-                    for stream, message_list in messages:
-                        if not message_list:
-                            continue
+                    message_id, fields = message_list[0]
 
-                        message_id, fields = message_list[0]
-                        if self._process_stream_message(stream, message_id, fields, group_name):
-                            return True
+                    # Get the group name for this stream
+                    group_name = self._pending_queue_to_group.get(stream)
+                    if not group_name:
+                        # Try without prefix (response might not be prefixed)
+                        for pending_stream, pending_group in self._pending_queue_to_group.items():
+                            if pending_stream.endswith(bytes_to_str(stream)) or stream == pending_stream.encode():
+                                group_name = pending_group
+                                break
+
+                    if group_name and self._process_stream_message(stream, message_id, fields, group_name):
+                        return True
 
             except self.connection_errors:
                 # if there's a ConnectionError, disconnect so the next
