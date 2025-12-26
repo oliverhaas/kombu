@@ -318,7 +318,7 @@ class QoS(virtual.QoS):
                             groupname=self.channel.consumer_group,
                             consumername=self.channel.consumer_id,
                             min_idle_time=idle_time,
-                            start=cursor,
+                            start_id=cursor,
                             count=min(num - total_claimed, 100)
                         )
 
