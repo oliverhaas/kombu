@@ -861,37 +861,50 @@ class Channel(virtual.Channel):
             self.connection.cycle._on_connection_disconnect(connection)
 
     def _do_restore_message(self, payload, exchange, routing_key,
-                            pipe, leftmost=False):
+                            client=None, leftmost=False):
+        """Restore message to stream (simplified - no pipe needed)."""
+        import uuid
+
         try:
             try:
                 payload['headers']['redelivered'] = True
                 payload['properties']['delivery_info']['redelivered'] = True
             except KeyError:
                 pass
+
+            # Find destination queues
             for queue in self._lookup(exchange, routing_key):
                 pri = self._get_message_priority(payload, reverse=False)
+                stream_key = self._stream_for_pri(queue, pri)
 
-                (pipe.lpush if leftmost else pipe.rpush)(
-                    self._q_for_pri(queue, pri), dumps(payload),
-                )
+                with self.conn_or_acquire(client=client) as c:
+                    # Ensure consumer group exists
+                    self._ensure_consumer_group(stream_key)
+
+                    # Re-add to stream (note: leftmost param ignored for streams)
+                    c.xadd(
+                        name=stream_key,
+                        fields={
+                            'uuid': str(uuid.uuid4()),  # New UUID
+                            'payload': dumps(payload),
+                        },
+                        id='*',
+                        maxlen=self.stream_maxlen,
+                        approximate=True
+                    )
         except Exception:
             crit('Could not restore message: %r', payload, exc_info=True)
 
     def _restore(self, message, leftmost=False):
-        if not self.ack_emulation:
-            return super()._restore(message)
-        tag = message.delivery_tag
-
-        def restore_transaction(pipe):
-            P = pipe.hget(self.unacked_key, tag)
-            pipe.multi()
-            pipe.hdel(self.unacked_key, tag)
-            if P:
-                M, EX, RK = loads(bytes_to_str(P))  # json is unicode
-                self._do_restore_message(M, EX, RK, pipe, leftmost)
-
-        with self.conn_or_acquire() as client:
-            client.transaction(restore_transaction, self.unacked_key)
+        """Restore message (simplified for streams)."""
+        try:
+            # Extract payload from message
+            M = message._raw
+            EX = message.delivery_info.get('exchange')
+            RK = message.delivery_info.get('routing_key')
+            self._do_restore_message(M, EX, RK, leftmost=leftmost)
+        except Exception:
+            crit('Could not restore message: %r', message, exc_info=True)
 
     def _restore_at_beginning(self, message):
         return self._restore(message, leftmost=True)
