@@ -255,39 +255,36 @@ class QoS(virtual.QoS):
             return
 
         # For requeue, we need to re-add the message
-        # Get the message from PEL, then XACK and re-add
-        pending = client.xpending_range(
-            name=stream,
-            groupname=group_name,
-            min=message_id,
-            max=message_id,
-            count=1
-        )
+        try:
+            # Get the message from PEL
+            pending = client.xpending_range(
+                name=stream,
+                groupname=group_name,
+                min=message_id,
+                max=message_id,
+                count=1
+            )
 
-        if not pending:
-            self._delivery_metadata.pop(delivery_tag, None)
-            super().ack(delivery_tag)
-            return
+            if pending:
+                # Read the actual message content
+                messages = client.xrange(stream, min=message_id, max=message_id, count=1)
+                if messages:
+                    msg_id, fields = messages[0]
+                    # Re-add to stream first (safer - if this fails, message stays in PEL)
+                    client.xadd(
+                        name=stream,
+                        fields=fields,
+                        id='*',
+                        maxlen=self.channel.stream_maxlen,
+                        approximate=True
+                    )
+                    # ACK the old one after successful re-add
+                    client.xack(stream, group_name, message_id)
+        except Exception:
+            # If requeue fails, log but still ack to prevent infinite retry
+            crit('Failed to requeue message %r', delivery_tag, exc_info=True)
 
-        # Read the actual message content
-        messages = client.xrange(stream, min=message_id, max=message_id, count=1)
-        if not messages:
-            self._delivery_metadata.pop(delivery_tag, None)
-            super().ack(delivery_tag)
-            return
-
-        msg_id, fields = messages[0]
-        # Re-add to stream first (safer - if this fails, message stays in PEL)
-        client.xadd(
-            name=stream,
-            fields=fields,
-            id='*',
-            maxlen=self.channel.stream_maxlen,
-            approximate=True
-        )
-        # ACK the old one after successful re-add
-        client.xack(stream, group_name, message_id)
-
+        # Always cleanup metadata and mark as acked, even if requeue failed
         self._delivery_metadata.pop(delivery_tag, None)
         super().ack(delivery_tag)
 
@@ -305,7 +302,7 @@ class QoS(virtual.QoS):
                     cursor = '0-0'
                     total_claimed = 0
 
-                    while cursor != '0-0' and total_claimed < num:
+                    while total_claimed < num:
                         result = client.xautoclaim(
                             name=stream,
                             groupname=self.channel.consumer_group,
@@ -319,6 +316,7 @@ class QoS(virtual.QoS):
                         claimed_messages = result[1] if len(result) > 1 else []
                         total_claimed += len(claimed_messages)
 
+                        # cursor '0-0' means we've scanned everything
                         if cursor == b'0-0' or cursor == '0-0':
                             break
 
