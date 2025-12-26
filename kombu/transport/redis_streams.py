@@ -121,19 +121,18 @@ error_classes_t = namedtuple('error_classes_t', (
 ))
 
 
-# This implementation may seem overly complex, but I assure you there is
-# a good reason for doing it this way.
+# This implementation is based on redis.py but uses Redis Streams instead of
+# Lists, Sorted Sets, and PUB/SUB.
 #
-# Consuming from several connections enables us to emulate channels,
-# which means we can have different service guarantees for individual
-# channels.
+# Key differences from redis.py:
+# - XADD/XREADGROUP instead of LPUSH/BRPOP for message queuing
+# - Consumer groups instead of PUB/SUB for fanout exchanges
+# - Native PEL (Pending Entries List) instead of manual unacked tracking
+# - XCLAIM for message recovery instead of sorted set manipulation
 #
-# So we need to consume messages from multiple connections simultaneously,
-# and using epoll means we don't have to do so using multiple threads.
-#
-# Also it means we can easily use PUBLISH/SUBSCRIBE to do fanout
-# exchanges (broadcast), as an alternative to pushing messages to fanout-bound
-# queues manually.
+# Consuming from multiple connections using epoll enables us to emulate
+# channels with different service guarantees while efficiently handling
+# I/O from multiple streams simultaneously without threads.
 
 
 def get_redis_error_classes():
