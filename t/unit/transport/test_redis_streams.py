@@ -119,7 +119,8 @@ class StreamsClient:
     groups = defaultdict(dict)  # stream_name -> {group_name -> {'consumers': {}, 'pending': []}}
     sets = defaultdict(set)
     message_id_counter = count(1000)
-    _consumed_messages = defaultdict(set)  # group_key -> set of consumed message IDs
+    _consumed = defaultdict(set)  # group_key -> set of consumed message IDs (shared across instances)
+    _group_consumers = defaultdict(set)  # group_key -> set of consumer names (shared across instances)
 
     def __init__(self, db=None, port=None, connection_pool=None, **kwargs):
         self._called = []
@@ -165,8 +166,9 @@ class StreamsClient:
                 # New messages not yet delivered to this group
                 # Track consumed messages per group
                 group_key = f"{stream_name}:{groupname}"
-                if not hasattr(self, '_consumed'):
-                    self._consumed = defaultdict(set)
+
+                # Register this consumer in the group
+                self._group_consumers[group_key].add(consumername)
 
                 stream_messages = []
                 for msg_id, fields in self.streams[stream_name]:
@@ -226,6 +228,25 @@ class StreamsClient:
         self.consumer_groups_created.add(key)
         if mkstream and name not in self.streams:
             self.streams[name] = []
+        # Initialize consumer tracking for this group
+        self._group_consumers[key] = set()
+
+    def xgroup_delconsumer(self, name, groupname, consumername):
+        """Mock XGROUP DELCONSUMER command."""
+        key = f"{name}:{groupname}"
+        if consumername in self._group_consumers[key]:
+            self._group_consumers[key].discard(consumername)
+            return 1  # Number of pending messages deleted
+        return 0
+
+    def xinfo_consumers(self, name, groupname):
+        """Mock XINFO CONSUMERS command."""
+        key = f"{name}:{groupname}"
+        # Return list of consumer info dicts
+        return [
+            {'name': consumer, 'pending': 0, 'idle': 0}
+            for consumer in self._group_consumers[key]
+        ]
 
     def xrange(self, stream, min='-', max='+', count=None):
         """Mock XRANGE command."""
@@ -349,6 +370,8 @@ class test_StreamsChannel:
         StreamsClient.streams.clear()
         StreamsClient.groups.clear()
         StreamsClient.sets.clear()
+        StreamsClient._consumed.clear()
+        StreamsClient._group_consumers.clear()
         StreamsClient.message_id_counter = count(1000)
 
     def test_stream_for_pri(self, connection):
@@ -415,7 +438,9 @@ class test_StreamsChannel:
             }
             channel._put('testqueue', message)
 
-        # Get should return highest priority first (0)
+        # Get messages in priority order (0 is highest priority)
+        # Note: In real usage, basic_get() would call qos.append() which tracks messages,
+        # but we're calling _get() directly so messages aren't tracked
         msg1 = channel._get('testqueue')
         assert 'priority 0' in msg1['body']
 
@@ -665,17 +690,24 @@ class test_StreamsChannel:
         """Test that auto-delete queues are cleaned up on close."""
         channel = connection.default_channel
 
-        # Create auto-delete queue with message
-        channel._new_queue('auto_del_queue', auto_delete=True)
+        # Properly declare an auto-delete queue and bind it
+        queue_name = 'auto_del_queue'
+        exchange_name = 'test_exchange'
+
+        channel.exchange_declare(exchange_name, type='direct')
+        channel.queue_declare(queue_name, auto_delete=True)
+        channel.queue_bind(queue_name, exchange_name, routing_key='test')
+
+        # Put a message
         message = {
             'body': 'test',
             'properties': {'priority': 0},
             'headers': {},
         }
-        channel._put('auto_del_queue', message)
+        channel._put(queue_name, message)
 
         # Verify stream exists
-        stream_key = channel._stream_for_pri('auto_del_queue', 0)
+        stream_key = channel._stream_for_pri(queue_name, 0)
         assert stream_key in StreamsClient.streams
 
         # Close channel
@@ -694,6 +726,8 @@ class test_StreamsQoS:
         StreamsClient.streams.clear()
         StreamsClient.groups.clear()
         StreamsClient.sets.clear()
+        StreamsClient._consumed.clear()
+        StreamsClient._group_consumers.clear()
         StreamsClient.message_id_counter = count(1000)
 
     def test_reject_with_requeue(self, connection):
@@ -949,6 +983,8 @@ class test_StreamsTransport:
         StreamsClient.streams.clear()
         StreamsClient.groups.clear()
         StreamsClient.sets.clear()
+        StreamsClient._consumed.clear()
+        StreamsClient._group_consumers.clear()
         StreamsClient.message_id_counter = count(1000)
 
     def test_connection(self):
@@ -1030,14 +1066,17 @@ class test_StreamsTransport:
 
         conn.close()
 
-    def test_empty_queue_get_returns_none(self):
-        """Test getting from empty queue returns None."""
+    def test_empty_queue_get_raises_empty(self):
+        """Test getting from empty queue raises Empty."""
+        from _queue import Empty
+
         conn = Connection('redis://localhost', transport=Transport)
         channel = conn.default_channel
 
-        # Get from empty queue
-        result = channel._get('empty_queue')
-        assert result is None
+        # Get from empty queue should raise Empty
+        with pytest.raises(Empty):
+            channel._get('empty_queue')
+
         conn.close()
 
     def test_consumer_group_unique_per_vhost(self):

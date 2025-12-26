@@ -795,6 +795,19 @@ class Channel(virtual.Channel):
         except KeyError:
             pass
         ret = super().basic_cancel(consumer_tag)
+
+        # AMQP spec: auto-delete queue when last consumer is cancelled
+        if queue in self.auto_delete_queues:
+            # Check if this was the last consumer for this queue
+            queue_has_consumers = any(
+                q == queue for q in self._tag_to_queue.values()
+            )
+            if not queue_has_consumers:
+                # Last consumer cancelled, delete the queue
+                client = self.__dict__.get('client')
+                if client is not None:
+                    self._cleanup_consumer_and_delete_if_last(queue, client)
+
         self._update_queue_cycle()
         return ret
 
@@ -1166,15 +1179,46 @@ class Channel(virtual.Channel):
             # remove from channel poller.
             self.connection.cycle.discard(self)
 
-            # delete fanout bindings
+            # Handle auto-delete queues: remove this consumer, delete if last
             client = self.__dict__.get('client')  # only if property cached
             if client is not None:
-                for queue in self._fanout_queues:
-                    if queue in self.auto_delete_queues:
-                        self.queue_delete(queue, client=client)
+                for queue in list(self.auto_delete_queues):
+                    self._cleanup_consumer_and_delete_if_last(queue, client)
             self._disconnect_pools()
             self._close_clients()
         super().close()
+
+    def _cleanup_consumer_and_delete_if_last(self, queue, client):
+        """Remove this consumer from queue's groups, delete queue if last consumer."""
+        # Determine the consumer group name for this queue
+        if queue in self._fanout_queues:
+            group_name = self._fanout_consumer_group(queue)
+        else:
+            group_name = self.consumer_group
+
+        # Check all priority streams for this queue
+        for pri in self.priority_steps:
+            stream_key = self._stream_for_pri(queue, pri)
+
+            try:
+                # Remove this consumer from the group
+                client.xgroup_delconsumer(stream_key, group_name, self.consumer_id)
+            except self.ResponseError:
+                # Consumer, group, or stream doesn't exist - that's fine
+                pass
+
+            # Check if any consumers remain in the group
+            try:
+                consumers = client.xinfo_consumers(stream_key, group_name)
+                if consumers:
+                    # There are still other consumers, don't delete
+                    return
+            except self.ResponseError:
+                # Group or stream doesn't exist - continue to next priority
+                pass
+
+        # No consumers remain in any priority stream, safe to delete
+        self.queue_delete(queue, client=client)
 
     def _close_clients(self):
         # Close connections
