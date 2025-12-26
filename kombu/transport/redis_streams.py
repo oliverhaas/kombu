@@ -74,7 +74,6 @@ from collections import namedtuple
 from contextlib import contextmanager
 from importlib.metadata import version
 from queue import Empty
-from time import time
 
 from packaging.version import Version
 from vine import promise
@@ -364,7 +363,11 @@ class PrefixedRedisPubSub(redis.client.PubSub):
 
 
 class QoS(virtual.QoS):
-    """Redis Ack Emulation."""
+    """Redis Streams QoS using PEL (Pending Entries List).
+
+    Unlike the standard Redis transport, this doesn't need to maintain
+    a separate sorted set for unacked messages - the PEL handles this natively.
+    """
 
     restore_at_shutdown = True
 
@@ -372,98 +375,97 @@ class QoS(virtual.QoS):
         super().__init__(*args, **kwargs)
         self._vrestore_count = 0
 
-    def append(self, message, delivery_tag):
-        delivery = message.delivery_info
-        EX, RK = delivery['exchange'], delivery['routing_key']
-        # TODO: Remove this once we solely on Redis-py 3.0.0+
-        if redis.VERSION[0] >= 3:
-            # Redis-py changed the format of zadd args in v3.0.0
-            zadd_args = [{delivery_tag: time()}]
-        else:
-            zadd_args = [time(), delivery_tag]
-
-        with self.pipe_or_acquire() as pipe:
-            pipe.zadd(self.unacked_index_key, *zadd_args) \
-                .hset(self.unacked_key, delivery_tag,
-                      dumps([message._raw, EX, RK])) \
-                .execute()
-            super().append(message, delivery_tag)
-
-    def restore_unacked(self, client=None):
-        with self.channel.conn_or_acquire(client) as client:
-            for tag in self._delivered:
-                self.restore_by_tag(tag, client=client)
-        self._delivered.clear()
-
     def ack(self, delivery_tag):
-        self._remove_from_indices(delivery_tag).execute()
-        super().ack(delivery_tag)
+        """Acknowledge message by XACK."""
+        # delivery_tag format: "stream_name:message_id"
+        try:
+            stream, message_id = delivery_tag.rsplit(':', 1)
+
+            with self.channel.conn_or_acquire() as client:
+                client.xack(stream, self.channel.consumer_group, message_id)
+
+            super().ack(delivery_tag)
+        except (ValueError, AttributeError) as e:
+            # Malformed delivery tag or missing attribute
+            logger.warning(f'Failed to ack {delivery_tag}: {e}')
 
     def reject(self, delivery_tag, requeue=False):
-        if requeue:
-            self.restore_by_tag(delivery_tag, leftmost=True)
-        else:
-            self._remove_from_indices(delivery_tag).execute()
-        super().ack(delivery_tag)
+        """Reject message, optionally requeue."""
+        try:
+            stream, message_id = delivery_tag.rsplit(':', 1)
 
-    @contextmanager
-    def pipe_or_acquire(self, pipe=None, client=None):
-        if pipe:
-            yield pipe
-        else:
-            with self.channel.conn_or_acquire(client) as client:
-                yield client.pipeline()
+            if requeue:
+                # For requeue, we need to re-add the message
+                # First get it from PEL, then XACK and re-add
+                with self.channel.conn_or_acquire() as client:
+                    # Get the message from PEL
+                    pending = client.xpending_range(
+                        name=stream,
+                        groupname=self.channel.consumer_group,
+                        min=message_id,
+                        max=message_id,
+                        count=1
+                    )
 
-    def _remove_from_indices(self, delivery_tag, pipe=None):
-        with self.pipe_or_acquire(pipe) as pipe:
-            return pipe.zrem(self.unacked_index_key, delivery_tag) \
-                       .hdel(self.unacked_key, delivery_tag)
+                    if pending:
+                        # Read the actual message content
+                        messages = client.xrange(stream, min=message_id, max=message_id, count=1)
+                        if messages:
+                            msg_id, fields = messages[0]
+                            # ACK the old one
+                            client.xack(stream, self.channel.consumer_group, message_id)
+                            # Re-add to stream
+                            client.xadd(
+                                name=stream,
+                                fields=fields,
+                                id='*',
+                                maxlen=self.channel.stream_maxlen,
+                                approximate=True
+                            )
+            else:
+                # Just ACK (removes from PEL)
+                with self.channel.conn_or_acquire() as client:
+                    client.xack(stream, self.channel.consumer_group, message_id)
+
+            super().ack(delivery_tag)
+        except (ValueError, AttributeError) as e:
+            logger.warning(f'Failed to reject {delivery_tag}: {e}')
 
     def restore_visible(self, start=0, num=10, interval=10):
+        """Reclaim messages idle past visibility timeout using XCLAIM."""
         self._vrestore_count += 1
         if (self._vrestore_count - 1) % interval:
             return
+
+        idle_time = int(self.visibility_timeout * 1000)  # milliseconds
+
         with self.channel.conn_or_acquire() as client:
-            ceil = time() - self.visibility_timeout
-            try:
-                with Mutex(client, self.unacked_mutex_key,
-                           self.unacked_mutex_expire):
-                    visible = client.zrevrangebyscore(
-                        self.unacked_index_key, ceil, 0,
-                        start=num and start, num=num, withscores=True)
-                    for tag, score in visible or []:
-                        self.restore_by_tag(tag, client)
-            except MutexHeld:
-                pass
+            # Check all active streams for stuck messages
+            for stream in self.channel._get_all_streams():
+                try:
+                    # Get pending messages for this consumer group
+                    pending = client.xpending_range(
+                        name=stream,
+                        groupname=self.channel.consumer_group,
+                        min='-',
+                        max='+',
+                        count=num
+                    )
 
-    def restore_by_tag(self, tag, client=None, leftmost=False):
-
-        def restore_transaction(pipe):
-            p = pipe.hget(self.unacked_key, tag)
-            pipe.multi()
-            self._remove_from_indices(tag, pipe)
-            if p:
-                M, EX, RK = loads(bytes_to_str(p))  # json is unicode
-                self.channel._do_restore_message(M, EX, RK, pipe, leftmost)
-
-        with self.channel.conn_or_acquire(client) as client:
-            client.transaction(restore_transaction, self.unacked_key)
-
-    @cached_property
-    def unacked_key(self):
-        return self.channel.unacked_key
-
-    @cached_property
-    def unacked_index_key(self):
-        return self.channel.unacked_index_key
-
-    @cached_property
-    def unacked_mutex_key(self):
-        return self.channel.unacked_mutex_key
-
-    @cached_property
-    def unacked_mutex_expire(self):
-        return self.channel.unacked_mutex_expire
+                    for msg in pending or []:
+                        if msg['time_since_delivered'] > idle_time:
+                            # Claim stuck message
+                            client.xclaim(
+                                name=stream,
+                                groupname=self.channel.consumer_group,
+                                consumername=self.channel.consumer_id,
+                                min_idle_time=idle_time,
+                                message_ids=[msg['message_id']]
+                            )
+                except self.channel.ResponseError as e:
+                    logger.warning(f'Error restoring from {stream}: {e}')
+                except Exception as e:
+                    logger.warning(f'Unexpected error restoring from {stream}: {e}')
 
     @cached_property
     def visibility_timeout(self):
