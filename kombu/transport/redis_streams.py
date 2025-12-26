@@ -277,9 +277,7 @@ class QoS(virtual.QoS):
             return
 
         msg_id, fields = messages[0]
-        # ACK the old one
-        client.xack(stream, group_name, message_id)
-        # Re-add to stream
+        # Re-add to stream first (safer - if this fails, message stays in PEL)
         client.xadd(
             name=stream,
             fields=fields,
@@ -287,6 +285,8 @@ class QoS(virtual.QoS):
             maxlen=self.channel.stream_maxlen,
             approximate=True
         )
+        # ACK the old one after successful re-add
+        client.xack(stream, group_name, message_id)
 
         self._delivery_metadata.pop(delivery_tag, None)
         super().ack(delivery_tag)
