@@ -10,7 +10,7 @@ Streams-specific transport options:
 * ``consumer_group_prefix``: Prefix for consumer groups (default: 'kombu')
 * ``stream_maxlen``: Maximum stream length for trimming (default: 10000)
 
-Requires Redis 5.0+
+Requires Redis 6.2.0+ (for XAUTOCLAIM support)
 """
 
 from __future__ import annotations
