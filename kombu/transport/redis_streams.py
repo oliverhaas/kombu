@@ -152,9 +152,19 @@ class GlobalKeyPrefixMixin:
 
     # Commands used by Streams transport that need key prefixing
     PREFIXED_SIMPLE_COMMANDS = [
-        "SADD",      # Binding tables
-        "SREM",      # Binding tables
-        "SMEMBERS",  # Binding tables
+        "SADD",               # Binding tables
+        "SREM",               # Binding tables
+        "SMEMBERS",           # Binding tables
+        "XADD",               # Stream operations
+        "XACK",               # Stream operations
+        "XAUTOCLAIM",         # Stream operations
+        "XGROUP_CREATE",      # Stream operations
+        "XGROUP_DELCONSUMER",  # Stream operations
+        "XINFO_STREAM",       # Stream operations
+        "XINFO_CONSUMERS",    # Stream operations
+        "XPENDING_RANGE",     # Stream operations
+        "XRANGE",             # Stream operations
+        "XREADGROUP",         # Stream operations
     ]
 
     PREFIXED_COMPLEX_COMMANDS = {

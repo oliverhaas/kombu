@@ -1,6 +1,7 @@
 """Unit tests for Redis Streams transport."""
 from __future__ import annotations
 
+import functools
 import sys
 import types
 from collections import defaultdict
@@ -336,6 +337,12 @@ class Channel(redis_streams.Channel):
     """Test channel with mocked client."""
 
     def _get_client(self):
+        # Mimic the real implementation's global_keyprefix logic
+        if self.global_keyprefix:
+            return functools.partial(
+                StreamsClient,
+                global_keyprefix=self.global_keyprefix,
+            )
         return StreamsClient
 
     def _get_pool(self, asynchronous=False):
@@ -1098,3 +1105,21 @@ class test_StreamsTransport:
 
         conn1.close()
         conn2.close()
+
+    def test_global_keyprefix_creates_prefixed_client(self):
+        """Test that global_keyprefix is passed to client."""
+        conn = Connection(
+            'redis://localhost',
+            transport=Transport,
+            transport_options={'global_keyprefix': 'test_prefix:'}
+        )
+        channel = conn.default_channel
+
+        # Verify that channel has global_keyprefix set
+        assert channel.global_keyprefix == 'test_prefix:'
+
+        # Verify Client is a partial with the prefix
+        assert isinstance(channel.Client, functools.partial)
+        assert channel.Client.keywords.get('global_keyprefix') == 'test_prefix:'
+
+        conn.close()
