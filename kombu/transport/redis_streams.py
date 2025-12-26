@@ -148,37 +148,17 @@ def _after_fork_cleanup_channel(channel):
 
 
 class GlobalKeyPrefixMixin:
-    """Mixin to provide common logic for global key prefixing.
+    """Mixin to prefix Redis keys with global_keyprefix."""
 
-    Overriding all the methods used by Kombu with the same key prefixing logic
-    would be cumbersome and inefficient. Hence, we override the command
-    execution logic that is called by all commands.
-    """
-
+    # Commands used by Streams transport that need key prefixing
     PREFIXED_SIMPLE_COMMANDS = [
-        "HDEL",
-        "HGET",
-        "HLEN",
-        "HSET",
-        "LLEN",
-        "LPUSH",
-        "PUBLISH",
-        "RPUSH",
-        "RPOP",
-        "SADD",
-        "SREM",
-        "SET",
-        "SMEMBERS",
-        "ZADD",
-        "ZREM",
-        "ZREVRANGEBYSCORE",
+        "SADD",      # Binding tables
+        "SREM",      # Binding tables
+        "SMEMBERS",  # Binding tables
     ]
 
     PREFIXED_COMPLEX_COMMANDS = {
         "DEL": {"args_start": 0, "args_end": None},
-        "BRPOP": {"args_start": 0, "args_end": -1},
-        "EVALSHA": {"args_start": 2, "args_end": 3},
-        "WATCH": {"args_start": 0, "args_end": None},
     }
 
     def _prefix_args(self, args):
@@ -190,32 +170,9 @@ class GlobalKeyPrefixMixin:
         elif command in self.PREFIXED_COMPLEX_COMMANDS:
             args_start = self.PREFIXED_COMPLEX_COMMANDS[command]["args_start"]
             args_end = self.PREFIXED_COMPLEX_COMMANDS[command]["args_end"]
-
-            pre_args = args[:args_start] if args_start > 0 else []
-            post_args = []
-
-            if args_end is not None:
-                post_args = args[args_end:]
-
-            args = pre_args + [
-                self.global_keyprefix + str(arg)
-                for arg in args[args_start:args_end]
-            ] + post_args
+            args = [self.global_keyprefix + str(arg) for arg in args[args_start:args_end]]
 
         return [command, *args]
-
-    def parse_response(self, connection, command_name, **options):
-        """Parse a response from the Redis server.
-
-        Method wraps ``redis.parse_response()`` to remove prefixes of keys
-        returned by redis command.
-        """
-        ret = super().parse_response(connection, command_name, **options)
-        if command_name == 'BRPOP' and ret:
-            key, value = ret
-            key = key[len(self.global_keyprefix):]
-            return key, value
-        return ret
 
     def execute_command(self, *args, **kwargs):
         return super().execute_command(*self._prefix_args(args), **kwargs)
