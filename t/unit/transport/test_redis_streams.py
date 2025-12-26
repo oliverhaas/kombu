@@ -12,6 +12,7 @@ import pytest
 
 from kombu import Connection
 from kombu.utils import eventio
+from kombu.utils.json import dumps
 
 
 def _redis_modules():
@@ -131,6 +132,8 @@ class StreamsClient:
 
     def xadd(self, name, fields, id='*', maxlen=None, approximate=True):
         """Mock XADD command."""
+        self._called.append(('XADD', name, fields, id, maxlen, approximate))
+
         if id == '*':
             message_id = f"{next(self.message_id_counter)}-0"
         else:
@@ -201,6 +204,7 @@ class StreamsClient:
 
         Returns: [next_cursor, claimed_messages, deleted_ids]
         """
+        self._called.append(('XAUTOCLAIM', name, groupname, consumername, min_idle_time, start, count))
         # For simplicity, return empty result indicating scan complete
         return [b'0-0', [], []]
 
@@ -829,6 +833,111 @@ class test_StreamsQoS:
         # All should be acknowledged
         xack_calls = [call for call in channel.client._called if call[0] == 'XACK']
         assert len(xack_calls) >= 5
+
+    def test_reject_with_requeue_success(self, connection):
+        """Test reject with requeue successfully re-adds message."""
+        channel = connection.default_channel
+
+        message = {
+            'body': 'test message',
+            'properties': {'priority': 0},
+            'headers': {},
+        }
+
+        channel._put('testqueue', message)
+        retrieved = channel._get('testqueue')
+        delivery_tag = retrieved['properties']['delivery_tag']
+
+        # Mock xpending_range to return pending message
+        message_id = b'1000-0'
+
+        def mock_xpending(name, groupname, min, max, count):
+            # Return non-empty list to indicate message is pending
+            return [{'message_id': message_id}]
+
+        channel.client.xpending_range = mock_xpending
+
+        # Mock xrange to return message
+        def mock_xrange(name, min, max, count):
+            return [(message_id, {b'payload': dumps(message)})]
+
+        channel.client.xrange = mock_xrange
+
+        channel.client._called.clear()
+
+        # Reject with requeue
+        channel.qos.reject(delivery_tag, requeue=True)
+
+        # Verify XADD was called before XACK
+        xadd_calls = [i for i, call in enumerate(channel.client._called) if call[0] == 'XADD']
+        xack_calls = [i for i, call in enumerate(channel.client._called) if call[0] == 'XACK']
+
+        assert len(xadd_calls) >= 1, "XADD should be called for requeue"
+        assert len(xack_calls) >= 1, "XACK should be called after requeue"
+        assert xadd_calls[0] < xack_calls[0], "XADD should be called before XACK"
+
+        # Verify metadata was cleaned up
+        assert delivery_tag not in channel.qos._delivery_metadata
+
+    def test_reject_with_requeue_xadd_failure(self, connection):
+        """Test reject with requeue handles XADD failure gracefully."""
+        channel = connection.default_channel
+
+        message = {
+            'body': 'test message',
+            'properties': {'priority': 0},
+            'headers': {},
+        }
+
+        channel._put('testqueue', message)
+        retrieved = channel._get('testqueue')
+        delivery_tag = retrieved['properties']['delivery_tag']
+
+        # Mock xpending_range to return pending message
+        message_id = b'1000-0'
+
+        def mock_xpending(name, groupname, min, max, count):
+            return [{'message_id': message_id}]
+
+        channel.client.xpending_range = mock_xpending
+
+        # Mock xrange to return message
+        def mock_xrange(name, min, max, count):
+            return [(message_id, {b'payload': dumps(message)})]
+
+        channel.client.xrange = mock_xrange
+
+        # Mock xadd to fail
+        original_xadd = channel.client.xadd
+
+        def mock_xadd_fail(*args, **kwargs):
+            raise Exception("XADD failed")
+
+        channel.client.xadd = mock_xadd_fail
+
+        # Reject with requeue should not raise, just log
+        channel.qos.reject(delivery_tag, requeue=True)
+
+        # Verify metadata was still cleaned up despite failure
+        assert delivery_tag not in channel.qos._delivery_metadata
+
+        # Restore original
+        channel.client.xadd = original_xadd
+
+    def test_restore_visible_runs_without_error(self, connection):
+        """Test restore_visible runs without errors."""
+        channel = connection.default_channel
+        qos = channel.qos
+
+        # Add a queue first
+        channel._put('testqueue', {'body': 'test', 'properties': {'priority': 0}, 'headers': {}})
+
+        # Call restore_visible - should not raise
+        # (interval=1 means it runs every call)
+        qos.restore_visible(num=10, interval=1)
+
+        # Just verify it completes without error
+        assert True
 
 
 class test_StreamsTransport:
