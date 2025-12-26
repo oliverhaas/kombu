@@ -633,7 +633,10 @@ class MultiChannelPoller:
 
 
 class Channel(virtual.Channel):
-    """Redis Channel."""
+    """Redis Streams Channel.
+
+    Uses Redis Streams (XADD/XREADGROUP) instead of Lists (LPUSH/BRPOP).
+    """
 
     QoS = QoS
 
@@ -647,14 +650,16 @@ class Channel(virtual.Channel):
     _in_poll = False
     _in_listen = False
     _fanout_queues = {}
-    ack_emulation = True
-    unacked_key = 'unacked'
-    unacked_index_key = 'unacked_index'
-    unacked_mutex_key = 'unacked_mutex'
-    unacked_mutex_expire = 300  # 5 minutes
-    unacked_restore_limit = None
-    visibility_timeout = 3600   # 1 hour
+
+    # Streams-specific: no longer need manual unacked tracking
+    # (PEL handles this)
+    visibility_timeout = 3600   # 1 hour (for XCLAIM)
     priority_steps = PRIORITY_STEPS
+
+    # New Streams-specific options
+    consumer_group_prefix = 'kombu'
+    stream_maxlen = 10000
+    prefetch_count = 1
     socket_timeout = None
     socket_connect_timeout = None
     socket_keepalive = None
@@ -716,13 +721,7 @@ class Channel(virtual.Channel):
     from_transport_options = (
         virtual.Channel.from_transport_options +
         ('sep',
-         'ack_emulation',
-         'unacked_key',
-         'unacked_index_key',
-         'unacked_mutex_key',
-         'unacked_mutex_expire',
          'visibility_timeout',
-         'unacked_restore_limit',
          'fanout_prefix',
          'fanout_patterns',
          'global_keyprefix',
@@ -735,7 +734,10 @@ class Channel(virtual.Channel):
          'health_check_interval',
          'retry_on_timeout',
          'priority_steps',
-         'client_name')  # <-- do not add comma here!
+         'client_name',
+         'consumer_group_prefix',
+         'stream_maxlen',
+         'prefetch_count')  # <-- do not add comma here!
     )
 
     connection_class = redis.Connection if redis else None
@@ -744,8 +746,6 @@ class Channel(virtual.Channel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        if not self.ack_emulation:  # disable visibility timeout
-            self.QoS = virtual.QoS
         self._registered = False
         self._queue_cycle = cycle_by_name(self.queue_order_strategy)()
         self.Client = self._get_client()
@@ -753,6 +753,7 @@ class Channel(virtual.Channel):
         self.active_fanout_queues = set()
         self.auto_delete_queues = set()
         self._fanout_to_queue = {}
+        # Note: handlers will be updated later to use XREADGROUP
         self.handlers = {'BRPOP': self._brpop_read, 'LISTEN': self._receive}
         self.brpop_timeout = self.connection.brpop_timeout
 
@@ -784,6 +785,58 @@ class Channel(virtual.Channel):
 
     def _after_fork(self):
         self._disconnect_pools()
+
+    # Streams-specific helper methods
+
+    def _stream_for_pri(self, queue, pri):
+        """Get stream key for queue at priority level."""
+        pri = self.priority(pri)
+        if pri:
+            return f"{queue}{self.sep}{pri}"
+        return queue
+
+    @cached_property
+    def consumer_group(self):
+        """Consumer group name for this connection."""
+        db = self.connection.client.virtual_host or 0
+        return f"{self.consumer_group_prefix}-{db}"
+
+    @cached_property
+    def consumer_id(self):
+        """Unique consumer identifier."""
+        import os
+        import threading
+
+        hostname = socket.gethostname()
+        pid = os.getpid()
+        thread_id = threading.get_ident()
+
+        return f"{hostname}-{pid}-{thread_id}"
+
+    def _ensure_consumer_group(self, stream, group=None):
+        """Ensure consumer group exists for stream."""
+        if group is None:
+            group = self.consumer_group
+
+        try:
+            self.client.xgroup_create(
+                name=stream,
+                groupname=group,
+                id='0',
+                mkstream=True
+            )
+        except self.ResponseError as e:
+            # Group already exists
+            if 'BUSYGROUP' not in str(e):
+                raise
+
+    def _get_all_streams(self):
+        """Get list of all active streams for this channel."""
+        streams = []
+        for queue in self.active_queues:
+            for pri in self.priority_steps:
+                streams.append(self._stream_for_pri(queue, pri))
+        return streams
 
     def _disconnect_pools(self):
         pool = self._pool
