@@ -231,7 +231,7 @@ class QoS(virtual.QoS):
             self._delivery_metadata.pop(delivery_tag, None)
         else:
             crit('Cannot ack message: metadata not found for delivery_tag %r',
-                 delivery_tag, exc_info=True)
+                 delivery_tag)
 
         super().ack(delivery_tag)
 
@@ -275,7 +275,7 @@ class QoS(virtual.QoS):
             self._delivery_metadata.pop(delivery_tag, None)
         else:
             crit('Cannot reject message: metadata not found for delivery_tag %r',
-                 delivery_tag, exc_info=True)
+                 delivery_tag)
 
         super().ack(delivery_tag)
 
