@@ -539,14 +539,14 @@ class MultiChannelPoller:
         return (client.connection._sock is not None and
                 (channel, client, cmd) in self._chan_to_sock)
 
-    def _register_BRPOP(self, channel):
-        """Enable BRPOP mode for channel."""
-        ident = channel, channel.client, 'BRPOP'
-        if not self._client_registered(channel, channel.client, 'BRPOP'):
+    def _register_XREADGROUP(self, channel):
+        """Enable XREADGROUP mode for channel."""
+        ident = channel, channel.client, 'XREADGROUP'
+        if not self._client_registered(channel, channel.client, 'XREADGROUP'):
             channel._in_poll = False
             self._register(*ident)
-        if not channel._in_poll:  # send BRPOP
-            channel._brpop_start()
+        if not channel._in_poll:  # send XREADGROUP
+            channel._xreadgroup_start()
 
     def _register_LISTEN(self, channel):
         """Enable LISTEN mode for channel."""
@@ -558,9 +558,9 @@ class MultiChannelPoller:
 
     def on_poll_start(self):
         for channel in self._channels:
-            if channel.active_queues:           # BRPOP mode?
+            if channel.active_queues:           # XREADGROUP mode?
                 if channel.qos.can_consume():
-                    self._register_BRPOP(channel)
+                    self._register_XREADGROUP(channel)
             if channel.active_fanout_queues:    # LISTEN mode?
                 self._register_LISTEN(channel)
 
@@ -568,7 +568,7 @@ class MultiChannelPoller:
         self.poller = poller
         for channel in self._channels:
             return channel.qos.restore_visible(
-                num=channel.unacked_restore_limit,
+                num=10,
             )
 
     def maybe_restore_messages(self):
@@ -576,7 +576,7 @@ class MultiChannelPoller:
             if channel.active_queues:
                 # only need to do this once, as they are not local to channel.
                 return channel.qos.restore_visible(
-                    num=channel.unacked_restore_limit,
+                    num=10,
                 )
 
     def maybe_check_subclient_health(self):
@@ -755,8 +755,8 @@ class Channel(virtual.Channel):
         self.active_fanout_queues = set()
         self.auto_delete_queues = set()
         self._fanout_to_queue = {}
-        # Note: handlers will be updated later to use XREADGROUP
-        self.handlers = {'BRPOP': self._brpop_read, 'LISTEN': self._receive}
+        # Use XREADGROUP for streams-based consumption
+        self.handlers = {'XREADGROUP': self._xreadgroup_read, 'LISTEN': self._receive}
         self.brpop_timeout = self.connection.brpop_timeout
 
         if self.fanout_prefix:
@@ -1027,43 +1027,81 @@ class Channel(virtual.Channel):
                         message, self._fanout_to_queue[exchange])
                     return True
 
-    def _brpop_start(self, timeout=None):
+    def _xreadgroup_start(self, timeout=None):
+        """Start XREADGROUP operation for async consumption."""
         if timeout is None:
             timeout = self.brpop_timeout
+
         queues = self._queue_cycle.consume(len(self.active_queues))
         if not queues:
             return
-        keys = [self._q_for_pri(queue, pri) for pri in self.priority_steps
-                for queue in queues] + [timeout or 0]
+
+        # Build streams dict with priorities (high priority first)
+        streams = {}
+        for pri in reversed(self.priority_steps):  # Reverse for high-to-low priority
+            for queue in queues:
+                stream_key = self._stream_for_pri(queue, pri)
+                # Ensure consumer group exists
+                self._ensure_consumer_group(stream_key)
+                streams[stream_key] = '>'  # '>' means new messages
+
         self._in_poll = self.client.connection
+        # Store for _xreadgroup_read
+        self._pending_streams = streams
+        self._pending_timeout = timeout
+        self._pending_queues = queues
 
-        command_args = ['BRPOP', *keys]
-        if self.global_keyprefix:
-            command_args = self.client._prefix_args(command_args)
-
-        self.client.connection.send_command(*command_args)
-
-    def _brpop_read(self, **options):
+    def _xreadgroup_read(self, **options):
+        """Read messages from XREADGROUP operation."""
         try:
             try:
-                dest__item = self.client.parse_response(self.client.connection,
-                                                        'BRPOP',
-                                                        **options)
+                # Execute XREADGROUP
+                messages = self.client.xreadgroup(
+                    groupname=self.consumer_group,
+                    consumername=self.consumer_id,
+                    streams=self._pending_streams,
+                    count=1,  # Get one message at a time
+                    block=int(self._pending_timeout * 1000) if self._pending_timeout else 0
+                )
             except self.connection_errors:
                 # if there's a ConnectionError, disconnect so the next
                 # iteration will reconnect automatically.
                 self.client.connection.disconnect()
                 raise
-            if dest__item:
-                dest, item = dest__item
-                dest = bytes_to_str(dest).rsplit(self.sep, 1)[0]
-                self._queue_cycle.rotate(dest)
-                self.connection._deliver(loads(bytes_to_str(item)), dest)
-                return True
-            else:
-                raise Empty()
+
+            if messages:
+                # Process first message
+                # messages format: [(stream_name, [(message_id, {fields})])]
+                for stream, message_list in messages:
+                    if message_list:
+                        message_id, fields = message_list[0]
+
+                        stream_str = bytes_to_str(stream)
+                        message_id_str = bytes_to_str(message_id)
+
+                        # Extract queue name (remove priority suffix if present)
+                        queue = stream_str.rsplit(self.sep, 1)[0]
+
+                        # Parse payload
+                        payload = loads(bytes_to_str(fields[b'payload']))
+
+                        # Set delivery tag
+                        delivery_tag = f"{stream_str}:{message_id_str}"
+                        payload['properties']['delivery_tag'] = delivery_tag
+
+                        # Rotate queue cycle
+                        self._queue_cycle.rotate(queue)
+
+                        # Deliver message
+                        self.connection._deliver(payload, queue)
+                        return True
+
+            raise Empty()
         finally:
             self._in_poll = None
+            self._pending_streams = None
+            self._pending_timeout = None
+            self._pending_queues = None
 
     def _poll_error(self, type, **options):
         if type == 'LISTEN':
@@ -1247,7 +1285,7 @@ class Channel(virtual.Channel):
         self._closing = True
         if self._in_poll:
             try:
-                self._brpop_read()
+                self._xreadgroup_read()
             except Empty:
                 pass
         if not self.closed:
