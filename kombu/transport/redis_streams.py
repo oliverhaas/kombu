@@ -238,45 +238,57 @@ class QoS(virtual.QoS):
     def reject(self, delivery_tag, requeue=False):
         """Reject message, optionally requeue."""
         metadata = self._delivery_metadata.get(delivery_tag)
-        if metadata:
-            stream, message_id, group_name = metadata
-            client = self.channel.client
-
-            if requeue:
-                # For requeue, we need to re-add the message
-                # Get the message from PEL, then XACK and re-add
-                pending = client.xpending_range(
-                    name=stream,
-                    groupname=group_name,
-                    min=message_id,
-                    max=message_id,
-                    count=1
-                )
-
-                if pending:
-                    # Read the actual message content
-                    messages = client.xrange(stream, min=message_id, max=message_id, count=1)
-                    if messages:
-                        msg_id, fields = messages[0]
-                        # ACK the old one
-                        client.xack(stream, group_name, message_id)
-                        # Re-add to stream
-                        client.xadd(
-                            name=stream,
-                            fields=fields,
-                            id='*',
-                            maxlen=self.channel.stream_maxlen,
-                            approximate=True
-                        )
-            else:
-                # Just ACK (removes from PEL)
-                client.xack(stream, group_name, message_id)
-
-            self._delivery_metadata.pop(delivery_tag, None)
-        else:
+        if not metadata:
             crit('Cannot reject message: metadata not found for delivery_tag %r',
                  delivery_tag)
+            super().ack(delivery_tag)
+            return
 
+        stream, message_id, group_name = metadata
+        client = self.channel.client
+
+        if not requeue:
+            # Just ACK (removes from PEL)
+            client.xack(stream, group_name, message_id)
+            self._delivery_metadata.pop(delivery_tag, None)
+            super().ack(delivery_tag)
+            return
+
+        # For requeue, we need to re-add the message
+        # Get the message from PEL, then XACK and re-add
+        pending = client.xpending_range(
+            name=stream,
+            groupname=group_name,
+            min=message_id,
+            max=message_id,
+            count=1
+        )
+
+        if not pending:
+            self._delivery_metadata.pop(delivery_tag, None)
+            super().ack(delivery_tag)
+            return
+
+        # Read the actual message content
+        messages = client.xrange(stream, min=message_id, max=message_id, count=1)
+        if not messages:
+            self._delivery_metadata.pop(delivery_tag, None)
+            super().ack(delivery_tag)
+            return
+
+        msg_id, fields = messages[0]
+        # ACK the old one
+        client.xack(stream, group_name, message_id)
+        # Re-add to stream
+        client.xadd(
+            name=stream,
+            fields=fields,
+            id='*',
+            maxlen=self.channel.stream_maxlen,
+            approximate=True
+        )
+
+        self._delivery_metadata.pop(delivery_tag, None)
         super().ack(delivery_tag)
 
     def restore_visible(self, start=0, num=10, interval=10):
@@ -836,10 +848,56 @@ class Channel(virtual.Channel):
         self._pending_queues = queues
         self._pending_queue_to_group = queue_to_group
 
+    def _get_queue_name_for_fanout(self, stream_str):
+        """Find queue name for a fanout stream."""
+        for queue, (exchange, routing_key) in self._fanout_queues.items():
+            fanout_stream = self._fanout_stream_key(exchange, routing_key)
+            if stream_str == fanout_stream:
+                return queue
+        return None
+
+    def _process_stream_message(self, stream, message_id, fields, group_name):
+        """Process a single message from a stream."""
+        stream_str = bytes_to_str(stream)
+        message_id_str = bytes_to_str(message_id)
+
+        # Determine queue name
+        if stream_str.startswith(self.keyprefix_fanout):
+            queue_name = self._get_queue_name_for_fanout(stream_str)
+            if not queue_name:
+                # Couldn't find queue, skip this message
+                return False
+        else:
+            # Regular queue: extract queue name (remove priority suffix if present)
+            queue_name = stream_str.rsplit(self.sep, 1)[0]
+
+        # Parse payload
+        payload = loads(bytes_to_str(fields[b'payload']))
+
+        # Set delivery tag using UUID (like base redis transport)
+        delivery_tag = self._next_delivery_tag()
+        payload['properties']['delivery_tag'] = delivery_tag
+
+        # Store metadata for ack/reject operations
+        self.qos._delivery_metadata[delivery_tag] = (
+            stream_str, message_id_str, group_name
+        )
+
+        # Rotate queue cycle if not fanout
+        if not stream_str.startswith(self.keyprefix_fanout):
+            self._queue_cycle.rotate(queue_name)
+
+        # Deliver message
+        self.connection._deliver(payload, queue_name)
+        return True
+
     def _xreadgroup_read(self, **options):
         """Read messages from XREADGROUP operation."""
         try:
             try:
+                if not self._pending_streams:
+                    raise Empty()
+
                 # Group streams by consumer group
                 groups = {}
                 for stream_key, stream_id in self._pending_streams.items():
@@ -858,50 +916,18 @@ class Channel(virtual.Channel):
                         block=int(self._pending_timeout * 1000) if self._pending_timeout else 0
                     )
 
-                    if messages:
-                        # Process first message
-                        # messages format: [(stream_name, [(message_id, {fields})])]
-                        for stream, message_list in messages:
-                            if message_list:
-                                message_id, fields = message_list[0]
+                    if not messages:
+                        continue
 
-                                stream_str = bytes_to_str(stream)
-                                message_id_str = bytes_to_str(message_id)
+                    # Process first message
+                    # messages format: [(stream_name, [(message_id, {fields})])]
+                    for stream, message_list in messages:
+                        if not message_list:
+                            continue
 
-                                # Check if this is a fanout stream
-                                if stream_str.startswith(self.keyprefix_fanout):
-                                    # Find queue for this fanout stream
-                                    for queue, (exchange, routing_key) in self._fanout_queues.items():
-                                        fanout_stream = self._fanout_stream_key(exchange, routing_key)
-                                        if stream_str == fanout_stream:
-                                            queue_name = queue
-                                            break
-                                    else:
-                                        # Couldn't find queue, skip
-                                        continue
-                                else:
-                                    # Regular queue: extract queue name (remove priority suffix if present)
-                                    queue_name = stream_str.rsplit(self.sep, 1)[0]
-
-                                # Parse payload
-                                payload = loads(bytes_to_str(fields[b'payload']))
-
-                                # Set delivery tag using UUID (like base redis transport)
-                                delivery_tag = self._next_delivery_tag()
-                                payload['properties']['delivery_tag'] = delivery_tag
-
-                                # Store metadata for ack/reject operations
-                                self.qos._delivery_metadata[delivery_tag] = (
-                                    stream_str, message_id_str, group_name
-                                )
-
-                                # Rotate queue cycle if not fanout
-                                if not stream_str.startswith(self.keyprefix_fanout):
-                                    self._queue_cycle.rotate(queue_name)
-
-                                # Deliver message
-                                self.connection._deliver(payload, queue_name)
-                                return True
+                        message_id, fields = message_list[0]
+                        if self._process_stream_message(stream, message_id, fields, group_name):
+                            return True
 
             except self.connection_errors:
                 # if there's a ConnectionError, disconnect so the next
@@ -940,25 +966,27 @@ class Channel(virtual.Channel):
                     block=0  # Non-blocking
                 )
 
-                if messages:
-                    # messages format: [(stream_name, [(message_id, {fields})])]
-                    for stream, message_list in messages:
-                        for message_id, fields in message_list:
-                            # Parse payload
-                            payload = loads(bytes_to_str(fields[b'payload']))
+                if not messages:
+                    continue
 
-                            # Set delivery tag using UUID (like base redis transport)
-                            stream_str = bytes_to_str(stream)
-                            message_id_str = bytes_to_str(message_id)
-                            delivery_tag = self._next_delivery_tag()
-                            payload['properties']['delivery_tag'] = delivery_tag
+                # messages format: [(stream_name, [(message_id, {fields})])]
+                for stream, message_list in messages:
+                    for message_id, fields in message_list:
+                        # Parse payload
+                        payload = loads(bytes_to_str(fields[b'payload']))
 
-                            # Store metadata for ack/reject operations
-                            self.qos._delivery_metadata[delivery_tag] = (
-                                stream_str, message_id_str, self.consumer_group
-                            )
+                        # Set delivery tag using UUID (like base redis transport)
+                        stream_str = bytes_to_str(stream)
+                        message_id_str = bytes_to_str(message_id)
+                        delivery_tag = self._next_delivery_tag()
+                        payload['properties']['delivery_tag'] = delivery_tag
 
-                            return payload
+                        # Store metadata for ack/reject operations
+                        self.qos._delivery_metadata[delivery_tag] = (
+                            stream_str, message_id_str, self.consumer_group
+                        )
+
+                        return payload
 
             raise Empty()
 
