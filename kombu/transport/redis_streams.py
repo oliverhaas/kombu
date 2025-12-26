@@ -377,12 +377,17 @@ class QoS(virtual.QoS):
 
     def ack(self, delivery_tag):
         """Acknowledge message by XACK."""
-        # delivery_tag format: "stream_name:message_id"
+        # delivery_tag format: "stream_name:message_id:group_name" or "stream_name:message_id"
         try:
-            stream, message_id = delivery_tag.rsplit(':', 1)
+            parts = delivery_tag.rsplit(':', 2)
+            if len(parts) == 3:
+                stream, message_id, group_name = parts
+            else:
+                stream, message_id = parts
+                group_name = self.channel.consumer_group
 
             with self.channel.conn_or_acquire() as client:
-                client.xack(stream, self.channel.consumer_group, message_id)
+                client.xack(stream, group_name, message_id)
 
             super().ack(delivery_tag)
         except (ValueError, AttributeError) as e:
@@ -392,7 +397,12 @@ class QoS(virtual.QoS):
     def reject(self, delivery_tag, requeue=False):
         """Reject message, optionally requeue."""
         try:
-            stream, message_id = delivery_tag.rsplit(':', 1)
+            parts = delivery_tag.rsplit(':', 2)
+            if len(parts) == 3:
+                stream, message_id, group_name = parts
+            else:
+                stream, message_id = parts
+                group_name = self.channel.consumer_group
 
             if requeue:
                 # For requeue, we need to re-add the message
@@ -401,7 +411,7 @@ class QoS(virtual.QoS):
                     # Get the message from PEL
                     pending = client.xpending_range(
                         name=stream,
-                        groupname=self.channel.consumer_group,
+                        groupname=group_name,
                         min=message_id,
                         max=message_id,
                         count=1
@@ -413,7 +423,7 @@ class QoS(virtual.QoS):
                         if messages:
                             msg_id, fields = messages[0]
                             # ACK the old one
-                            client.xack(stream, self.channel.consumer_group, message_id)
+                            client.xack(stream, group_name, message_id)
                             # Re-add to stream
                             client.xadd(
                                 name=stream,
@@ -425,7 +435,7 @@ class QoS(virtual.QoS):
             else:
                 # Just ACK (removes from PEL)
                 with self.channel.conn_or_acquire() as client:
-                    client.xack(stream, self.channel.consumer_group, message_id)
+                    client.xack(stream, group_name, message_id)
 
             super().ack(delivery_tag)
         except (ValueError, AttributeError) as e:
@@ -558,11 +568,10 @@ class MultiChannelPoller:
 
     def on_poll_start(self):
         for channel in self._channels:
-            if channel.active_queues:           # XREADGROUP mode?
+            # Both regular and fanout queues use XREADGROUP now
+            if channel.active_queues or channel.active_fanout_queues:
                 if channel.qos.can_consume():
                     self._register_XREADGROUP(channel)
-            if channel.active_fanout_queues:    # LISTEN mode?
-                self._register_LISTEN(channel)
 
     def on_poll_init(self, poller):
         self.poller = poller
@@ -755,8 +764,8 @@ class Channel(virtual.Channel):
         self.active_fanout_queues = set()
         self.auto_delete_queues = set()
         self._fanout_to_queue = {}
-        # Use XREADGROUP for streams-based consumption
-        self.handlers = {'XREADGROUP': self._xreadgroup_read, 'LISTEN': self._receive}
+        # Use XREADGROUP for all streams-based consumption (regular + fanout)
+        self.handlers = {'XREADGROUP': self._xreadgroup_read}
         self.brpop_timeout = self.connection.brpop_timeout
 
         if self.fanout_prefix:
@@ -1046,68 +1055,110 @@ class Channel(virtual.Channel):
             timeout = self.brpop_timeout
 
         queues = self._queue_cycle.consume(len(self.active_queues))
-        if not queues:
-            return
 
         # Build streams dict with priorities (high priority first)
         streams = {}
-        for pri in reversed(self.priority_steps):  # Reverse for high-to-low priority
-            for queue in queues:
-                stream_key = self._stream_for_pri(queue, pri)
+        queue_to_group = {}  # Track which group to use for each stream
+
+        # Add regular queues
+        if queues:
+            for pri in reversed(self.priority_steps):  # Reverse for high-to-low priority
+                for queue in queues:
+                    stream_key = self._stream_for_pri(queue, pri)
+                    # Ensure consumer group exists
+                    self._ensure_consumer_group(stream_key)
+                    streams[stream_key] = '>'  # '>' means new messages
+                    queue_to_group[stream_key] = self.consumer_group
+
+        # Add fanout streams
+        for queue in self.active_fanout_queues:
+            if queue in self._fanout_queues:
+                exchange, routing_key = self._fanout_queues[queue]
+                stream_key = self._fanout_stream_key(exchange, routing_key)
+                group_name = self._fanout_consumer_group(queue)
+
                 # Ensure consumer group exists
-                self._ensure_consumer_group(stream_key)
-                streams[stream_key] = '>'  # '>' means new messages
+                self._ensure_consumer_group(stream_key, group_name)
+                streams[stream_key] = '>'
+                queue_to_group[stream_key] = group_name
+
+        if not streams:
+            return
 
         self._in_poll = self.client.connection
         # Store for _xreadgroup_read
         self._pending_streams = streams
         self._pending_timeout = timeout
         self._pending_queues = queues
+        self._pending_queue_to_group = queue_to_group
 
     def _xreadgroup_read(self, **options):
         """Read messages from XREADGROUP operation."""
         try:
             try:
-                # Execute XREADGROUP
-                messages = self.client.xreadgroup(
-                    groupname=self.consumer_group,
-                    consumername=self.consumer_id,
-                    streams=self._pending_streams,
-                    count=1,  # Get one message at a time
-                    block=int(self._pending_timeout * 1000) if self._pending_timeout else 0
-                )
+                # Group streams by consumer group
+                groups = {}
+                for stream_key, stream_id in self._pending_streams.items():
+                    group_name = self._pending_queue_to_group[stream_key]
+                    if group_name not in groups:
+                        groups[group_name] = {}
+                    groups[group_name][stream_key] = stream_id
+
+                # Try each consumer group until we get a message
+                for group_name, group_streams in groups.items():
+                    messages = self.client.xreadgroup(
+                        groupname=group_name,
+                        consumername=self.consumer_id,
+                        streams=group_streams,
+                        count=1,  # Get one message at a time
+                        block=int(self._pending_timeout * 1000) if self._pending_timeout else 0
+                    )
+
+                    if messages:
+                        # Process first message
+                        # messages format: [(stream_name, [(message_id, {fields})])]
+                        for stream, message_list in messages:
+                            if message_list:
+                                message_id, fields = message_list[0]
+
+                                stream_str = bytes_to_str(stream)
+                                message_id_str = bytes_to_str(message_id)
+
+                                # Check if this is a fanout stream
+                                if stream_str.startswith(self.keyprefix_fanout):
+                                    # Find queue for this fanout stream
+                                    for queue, (exchange, routing_key) in self._fanout_queues.items():
+                                        fanout_stream = self._fanout_stream_key(exchange, routing_key)
+                                        if stream_str == fanout_stream:
+                                            queue_name = queue
+                                            break
+                                    else:
+                                        # Couldn't find queue, skip
+                                        continue
+                                else:
+                                    # Regular queue: extract queue name (remove priority suffix if present)
+                                    queue_name = stream_str.rsplit(self.sep, 1)[0]
+
+                                # Parse payload
+                                payload = loads(bytes_to_str(fields[b'payload']))
+
+                                # Set delivery tag
+                                delivery_tag = f"{stream_str}:{message_id_str}:{group_name}"
+                                payload['properties']['delivery_tag'] = delivery_tag
+
+                                # Rotate queue cycle if not fanout
+                                if not stream_str.startswith(self.keyprefix_fanout):
+                                    self._queue_cycle.rotate(queue_name)
+
+                                # Deliver message
+                                self.connection._deliver(payload, queue_name)
+                                return True
+
             except self.connection_errors:
                 # if there's a ConnectionError, disconnect so the next
                 # iteration will reconnect automatically.
                 self.client.connection.disconnect()
                 raise
-
-            if messages:
-                # Process first message
-                # messages format: [(stream_name, [(message_id, {fields})])]
-                for stream, message_list in messages:
-                    if message_list:
-                        message_id, fields = message_list[0]
-
-                        stream_str = bytes_to_str(stream)
-                        message_id_str = bytes_to_str(message_id)
-
-                        # Extract queue name (remove priority suffix if present)
-                        queue = stream_str.rsplit(self.sep, 1)[0]
-
-                        # Parse payload
-                        payload = loads(bytes_to_str(fields[b'payload']))
-
-                        # Set delivery tag
-                        delivery_tag = f"{stream_str}:{message_id_str}"
-                        payload['properties']['delivery_tag'] = delivery_tag
-
-                        # Rotate queue cycle
-                        self._queue_cycle.rotate(queue)
-
-                        # Deliver message
-                        self.connection._deliver(payload, queue)
-                        return True
 
             raise Empty()
         finally:
@@ -1115,6 +1166,7 @@ class Channel(virtual.Channel):
             self._pending_streams = None
             self._pending_timeout = None
             self._pending_queues = None
+            self._pending_queue_to_group = None
 
     def _poll_error(self, type, **options):
         if type == 'LISTEN':
@@ -1211,12 +1263,38 @@ class Channel(virtual.Channel):
             )
 
     def _put_fanout(self, exchange, message, routing_key, **kwargs):
-        """Deliver fanout message."""
+        """Deliver fanout message to stream."""
+        import uuid
+
+        # Fanout uses one stream per exchange
+        stream_key = self._fanout_stream_key(exchange, routing_key)
+
+        # Generate UUID for message tracking
+        message_uuid = str(uuid.uuid4())
+
         with self.conn_or_acquire() as client:
-            client.publish(
-                self._get_publish_topic(exchange, routing_key),
-                dumps(message),
+            # Add to fanout stream
+            client.xadd(
+                name=stream_key,
+                fields={
+                    'uuid': message_uuid,
+                    'payload': dumps(message),
+                },
+                id='*',
+                maxlen=self.stream_maxlen,
+                approximate=True
             )
+
+    def _fanout_stream_key(self, exchange, routing_key=''):
+        """Get stream key for fanout exchange."""
+        if routing_key and self.fanout_patterns:
+            return f"{self.keyprefix_fanout}{exchange}/{routing_key}"
+        return f"{self.keyprefix_fanout}{exchange}"
+
+    def _fanout_consumer_group(self, queue):
+        """Get consumer group name for fanout queue."""
+        # Each queue gets its own consumer group for broadcast
+        return f"{self.consumer_group_prefix}-fanout-{queue}"
 
     def _new_queue(self, queue, auto_delete=False, **kwargs):
         if auto_delete:
@@ -1228,6 +1306,12 @@ class Channel(virtual.Channel):
             self._fanout_queues[queue] = (
                 exchange, routing_key.replace('#', '*'),
             )
+
+            # Create consumer group for this queue
+            stream_key = self._fanout_stream_key(exchange, routing_key)
+            group_name = self._fanout_consumer_group(queue)
+            self._ensure_consumer_group(stream_key, group_name)
+
         with self.conn_or_acquire() as client:
             client.sadd(self.keyprefix_queue % (exchange,),
                         self.sep.join([routing_key or '',
