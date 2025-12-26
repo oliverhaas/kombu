@@ -1184,23 +1184,31 @@ class Channel(virtual.Channel):
                                        queue or '']))
 
     def _delete(self, queue, exchange, routing_key, pattern, *args, **kwargs):
+        """Delete queue and its streams."""
         self.auto_delete_queues.discard(queue)
         with self.conn_or_acquire(client=kwargs.get('client')) as client:
+            # Remove from binding table
             client.srem(self.keyprefix_queue % (exchange,),
                         self.sep.join([routing_key or '',
                                        pattern or '',
                                        queue or '']))
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    pipe = pipe.delete(self._q_for_pri(queue, pri))
-                pipe.execute()
+
+            # Delete all priority streams
+            for pri in self.priority_steps:
+                stream_key = self._stream_for_pri(queue, pri)
+                try:
+                    client.delete(stream_key)
+                except self.ResponseError:
+                    pass
 
     def _has_queue(self, queue, **kwargs):
+        """Check if any priority stream exists for queue."""
         with self.conn_or_acquire() as client:
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    pipe = pipe.exists(self._q_for_pri(queue, pri))
-                return any(pipe.execute())
+            for pri in self.priority_steps:
+                stream_key = self._stream_for_pri(queue, pri)
+                if client.exists(stream_key):
+                    return True
+            return False
 
     def get_table(self, exchange):
         key = self.keyprefix_queue % exchange
@@ -1213,13 +1221,27 @@ class Channel(virtual.Channel):
             return [tuple(bytes_to_str(val).split(self.sep)) for val in values]
 
     def _purge(self, queue):
+        """Purge all messages from queue by deleting and recreating streams."""
         with self.conn_or_acquire() as client:
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    priq = self._q_for_pri(queue, pri)
-                    pipe = pipe.llen(priq).delete(priq)
-                sizes = pipe.execute()
-                return sum(sizes[::2])
+            total = 0
+            for pri in self.priority_steps:
+                stream_key = self._stream_for_pri(queue, pri)
+                try:
+                    # Get size before deletion
+                    info = client.xinfo_stream(stream_key)
+                    count = info.get('length', 0)
+
+                    # Delete stream
+                    client.delete(stream_key)
+
+                    # Recreate consumer group
+                    self._ensure_consumer_group(stream_key)
+
+                    total += count
+                except self.ResponseError:
+                    # Stream doesn't exist
+                    pass
+            return total
 
     def close(self):
         self._closing = True
