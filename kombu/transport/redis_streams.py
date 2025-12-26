@@ -1,65 +1,14 @@
 """Redis Streams transport module for Kombu.
 
-This transport uses Redis Streams instead of Lists for message queuing,
-providing better reliability and observability through native PEL
-(Pending Entries List) support.
+Uses Redis Streams (XADD/XREADGROUP) instead of Lists (LPUSH/BRPOP) for
+message queuing, providing native message tracking via PEL (Pending Entries
+List) and consumer groups for fanout instead of PUB/SUB.
 
-Features
-========
-* Type: Virtual
-* Supports Direct: Yes
-* Supports Topic: Yes
-* Supports Fanout: Yes (using Streams, not PUB/SUB)
-* Supports Priority: Yes
-* Supports TTL: No
+Connection strings are identical to the standard redis transport.
 
-Connection String
-=================
-Connection string has the following format:
-
-.. code-block::
-
-    redis://[USER:PASSWORD@]REDIS_ADDRESS[:PORT][/VIRTUALHOST]
-    rediss://[USER:PASSWORD@]REDIS_ADDRESS[:PORT][/VIRTUALHOST]
-
-To use sentinel for dynamic Redis discovery,
-the connection string has following format:
-
-.. code-block::
-
-    sentinel://[USER:PASSWORD@]SENTINEL_ADDRESS[:PORT]
-
-Transport Options
-=================
-* ``sep``
-* ``visibility_timeout``: Message visibility timeout for recovery
-* ``fanout_prefix``
-* ``fanout_patterns``
-* ``global_keyprefix``: (str) The global key prefix to be prepended to all keys
-  used by Kombu
-* ``socket_timeout``
-* ``socket_connect_timeout``
-* ``socket_keepalive``
-* ``socket_keepalive_options``
-* ``queue_order_strategy``
-* ``max_connections``
-* ``health_check_interval``
-* ``retry_on_timeout``
-* ``priority_steps``
-* ``client_name``: (str) The name to use when connecting to Redis server
-* ``consumer_group_prefix``: (str) Prefix for consumer groups (default: 'kombu')
-* ``stream_maxlen``: (int) Maximum stream length (default: 10000)
-* ``prefetch_count``: (int) Number of messages to prefetch (default: 1)
-
-Architecture
-============
-This transport uses Redis Streams (XADD/XREADGROUP) instead of Lists (LPUSH/BRPOP).
-Key differences from the standard redis transport:
-
-* Messages stored in Redis Streams instead of Lists
-* Unacked message tracking via native PEL instead of sorted sets
-* Fanout using consumer groups instead of PUB/SUB
-* Better reliability and observability
+Streams-specific transport options:
+* ``consumer_group_prefix``: Prefix for consumer groups (default: 'kombu')
+* ``stream_maxlen``: Maximum stream length for trimming (default: 10000)
 
 Requires Redis 5.0+
 """
