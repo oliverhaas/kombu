@@ -551,7 +551,7 @@ class test_StreamsChannel:
         assert 'test_auto_delete' in channel.auto_delete_queues
 
     def test_delivery_tag_format(self, connection):
-        """Test delivery tag contains stream and message ID."""
+        """Test delivery tag is UUID and metadata is stored."""
         channel = connection.default_channel
 
         message = {
@@ -564,10 +564,13 @@ class test_StreamsChannel:
         retrieved = channel._get('testqueue')
 
         delivery_tag = retrieved['properties']['delivery_tag']
-        # Format should be stream:message_id:group_name
-        parts = delivery_tag.rsplit(':', 2)
-        assert len(parts) == 3
-        stream, message_id, group_name = parts
+        # Should be a UUID string (contains dashes, no colons)
+        assert '-' in delivery_tag
+        assert ':' not in delivery_tag
+
+        # Metadata should be stored in qos._delivery_metadata
+        assert delivery_tag in channel.qos._delivery_metadata
+        stream, message_id, group_name = channel.qos._delivery_metadata[delivery_tag]
         assert stream == 'testqueue'
         assert message_id  # Should have a message ID
         assert group_name == channel.consumer_group

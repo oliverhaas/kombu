@@ -220,72 +220,58 @@ class QoS(virtual.QoS):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._vrestore_count = 0
+        self._delivery_metadata = {}
 
     def ack(self, delivery_tag):
         """Acknowledge message by XACK."""
-        # delivery_tag format: "stream_name:message_id:group_name" or "stream_name:message_id"
-        try:
-            parts = delivery_tag.rsplit(':', 2)
-            if len(parts) == 3:
-                stream, message_id, group_name = parts
-            else:
-                stream, message_id = parts
-                group_name = self.channel.consumer_group
+        metadata = self._delivery_metadata.get(delivery_tag)
+        if metadata:
+            stream, message_id, group_name = metadata
+            self.channel.client.xack(stream, group_name, message_id)
+            self._delivery_metadata.pop(delivery_tag, None)
 
-            with self.channel.conn_or_acquire() as client:
-                client.xack(stream, group_name, message_id)
-
-            super().ack(delivery_tag)
-        except (ValueError, AttributeError) as e:
-            # Malformed delivery tag or missing attribute
-            logger.warning(f'Failed to ack {delivery_tag}: {e}')
+        super().ack(delivery_tag)
 
     def reject(self, delivery_tag, requeue=False):
         """Reject message, optionally requeue."""
-        try:
-            parts = delivery_tag.rsplit(':', 2)
-            if len(parts) == 3:
-                stream, message_id, group_name = parts
-            else:
-                stream, message_id = parts
-                group_name = self.channel.consumer_group
+        metadata = self._delivery_metadata.get(delivery_tag)
+        if metadata:
+            stream, message_id, group_name = metadata
+            client = self.channel.client
 
             if requeue:
                 # For requeue, we need to re-add the message
-                # First get it from PEL, then XACK and re-add
-                with self.channel.conn_or_acquire() as client:
-                    # Get the message from PEL
-                    pending = client.xpending_range(
-                        name=stream,
-                        groupname=group_name,
-                        min=message_id,
-                        max=message_id,
-                        count=1
-                    )
+                # Get the message from PEL, then XACK and re-add
+                pending = client.xpending_range(
+                    name=stream,
+                    groupname=group_name,
+                    min=message_id,
+                    max=message_id,
+                    count=1
+                )
 
-                    if pending:
-                        # Read the actual message content
-                        messages = client.xrange(stream, min=message_id, max=message_id, count=1)
-                        if messages:
-                            msg_id, fields = messages[0]
-                            # ACK the old one
-                            client.xack(stream, group_name, message_id)
-                            # Re-add to stream
-                            client.xadd(
-                                name=stream,
-                                fields=fields,
-                                id='*',
-                                maxlen=self.channel.stream_maxlen,
-                                approximate=True
-                            )
+                if pending:
+                    # Read the actual message content
+                    messages = client.xrange(stream, min=message_id, max=message_id, count=1)
+                    if messages:
+                        msg_id, fields = messages[0]
+                        # ACK the old one
+                        client.xack(stream, group_name, message_id)
+                        # Re-add to stream
+                        client.xadd(
+                            name=stream,
+                            fields=fields,
+                            id='*',
+                            maxlen=self.channel.stream_maxlen,
+                            approximate=True
+                        )
             else:
                 # Just ACK (removes from PEL)
-                with self.channel.conn_or_acquire() as client:
-                    client.xack(stream, group_name, message_id)
+                client.xack(stream, group_name, message_id)
 
-            super().ack(delivery_tag)
-        except (ValueError, AttributeError) as e:
-            logger.warning(f'Failed to reject {delivery_tag}: {e}')
+            self._delivery_metadata.pop(delivery_tag, None)
+
+        super().ack(delivery_tag)
 
     def restore_visible(self, start=0, num=10, interval=10):
         """Reclaim messages idle past visibility timeout."""
@@ -894,9 +880,14 @@ class Channel(virtual.Channel):
                                 # Parse payload
                                 payload = loads(bytes_to_str(fields[b'payload']))
 
-                                # Set delivery tag
-                                delivery_tag = f"{stream_str}:{message_id_str}:{group_name}"
+                                # Set delivery tag using UUID (like base redis transport)
+                                delivery_tag = self._next_delivery_tag()
                                 payload['properties']['delivery_tag'] = delivery_tag
+
+                                # Store metadata for ack/reject operations
+                                self.qos._delivery_metadata[delivery_tag] = (
+                                    stream_str, message_id_str, group_name
+                                )
 
                                 # Rotate queue cycle if not fanout
                                 if not stream_str.startswith(self.keyprefix_fanout):
@@ -950,12 +941,16 @@ class Channel(virtual.Channel):
                             # Parse payload
                             payload = loads(bytes_to_str(fields[b'payload']))
 
-                            # Create delivery tag: stream:message_id
+                            # Set delivery tag using UUID (like base redis transport)
                             stream_str = bytes_to_str(stream)
                             message_id_str = bytes_to_str(message_id)
-                            delivery_tag = f"{stream_str}:{message_id_str}"
-
+                            delivery_tag = self._next_delivery_tag()
                             payload['properties']['delivery_tag'] = delivery_tag
+
+                            # Store metadata for ack/reject operations
+                            self.qos._delivery_metadata[delivery_tag] = (
+                                stream_str, message_id_str, self.consumer_group
+                            )
 
                             return payload
 
