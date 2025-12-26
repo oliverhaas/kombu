@@ -558,14 +558,6 @@ class MultiChannelPoller:
         if not channel._in_poll:  # send XREADGROUP
             channel._xreadgroup_start()
 
-    def _register_LISTEN(self, channel):
-        """Enable LISTEN mode for channel."""
-        if not self._client_registered(channel, channel.subclient, 'LISTEN'):
-            channel._in_listen = False
-            self._register(channel, channel.subclient, 'LISTEN')
-        if not channel._in_listen:
-            channel._subscribe()  # send SUBSCRIBE
-
     def on_poll_start(self):
         for channel in self._channels:
             # Both regular and fanout queues use XREADGROUP now
@@ -588,14 +580,6 @@ class MultiChannelPoller:
                     num=10,
                 )
 
-    def maybe_check_subclient_health(self):
-        for channel in self._channels:
-            # only if subclient property is cached
-            client = channel.__dict__.get('subclient')
-            if client is not None \
-                    and callable(getattr(client, 'check_health', None)):
-                client.check_health()
-
     def on_readable(self, fileno):
         chan, type = self._fd_to_chan[fileno]
         if chan.qos.can_consume():
@@ -612,11 +596,10 @@ class MultiChannelPoller:
         self._in_protected_read = True
         try:
             for channel in self._channels:
-                if channel.active_queues:           # BRPOP mode?
+                # Both regular and fanout queues use XREADGROUP now
+                if channel.active_queues or channel.active_fanout_queues:
                     if channel.qos.can_consume():
-                        self._register_BRPOP(channel)
-                if channel.active_fanout_queues:    # LISTEN mode?
-                    self._register_LISTEN(channel)
+                        self._register_XREADGROUP(channel)
 
             events = self.poller.poll(timeout)
             if events:
@@ -652,14 +635,12 @@ class Channel(virtual.Channel):
     QoS = QoS
 
     _client = None
-    _subclient = None
     _closing = False
     supports_fanout = True
     keyprefix_queue = '_kombu.binding.%s'
     keyprefix_fanout = '/{db}.'
     sep = '\x06\x16'
     _in_poll = False
-    _in_listen = False
     _fanout_queues = {}
 
     # Streams-specific: no longer need manual unacked tracking
@@ -864,8 +845,7 @@ class Channel(virtual.Channel):
     def _on_connection_disconnect(self, connection):
         if self._in_poll is connection:
             self._in_poll = None
-        if self._in_listen is connection:
-            self._in_listen = None
+        # No _in_listen anymore (removed PUB/SUB support)
         if self.connection and self.connection.cycle:
             self.connection.cycle._on_connection_disconnect(connection)
 
@@ -960,8 +940,7 @@ class Channel(virtual.Channel):
             self.active_fanout_queues.remove(queue)
         except KeyError:
             pass
-        else:
-            self._unsubscribe_from(queue)
+        # No need to unsubscribe - using Streams instead of PUB/SUB
         try:
             exchange, _ = self._fanout_queues[queue]
             self._fanout_to_queue.pop(exchange)
@@ -975,79 +954,6 @@ class Channel(virtual.Channel):
         if routing_key and self.fanout_patterns:
             return ''.join([self.keyprefix_fanout, exchange, '/', routing_key])
         return ''.join([self.keyprefix_fanout, exchange])
-
-    def _get_subscribe_topic(self, queue):
-        exchange, routing_key = self._fanout_queues[queue]
-        return self._get_publish_topic(exchange, routing_key)
-
-    def _subscribe(self):
-        keys = [self._get_subscribe_topic(queue)
-                for queue in self.active_fanout_queues]
-        if not keys:
-            return
-        c = self.subclient
-        if c.connection._sock is None:
-            c.connection.connect()
-        self._in_listen = c.connection
-        c.psubscribe(keys)
-
-    def _unsubscribe_from(self, queue):
-        topic = self._get_subscribe_topic(queue)
-        c = self.subclient
-        if c.connection and c.connection._sock:
-            c.unsubscribe([topic])
-
-    def _handle_message(self, client, r):
-        if bytes_to_str(r[0]) == 'unsubscribe' and r[2] == 0:
-            client.subscribed = False
-            return
-
-        if bytes_to_str(r[0]) == 'pmessage':
-            type, pattern, channel, data = r[0], r[1], r[2], r[3]
-        else:
-            type, pattern, channel, data = r[0], None, r[1], r[2]
-        return {
-            'type': type,
-            'pattern': pattern,
-            'channel': channel,
-            'data': data,
-        }
-
-    def _receive(self):
-        c = self.subclient
-        ret = []
-        try:
-            ret.append(self._receive_one(c))
-        except Empty:
-            pass
-        while c.connection is not None and c.connection.can_read(timeout=0):
-            ret.append(self._receive_one(c))
-        return any(ret)
-
-    def _receive_one(self, c):
-        response = None
-        try:
-            response = c.parse_response()
-        except self.connection_errors:
-            self._in_listen = None
-            raise
-        if isinstance(response, (list, tuple)):
-            payload = self._handle_message(c, response)
-            if bytes_to_str(payload['type']).endswith('message'):
-                channel = bytes_to_str(payload['channel'])
-                if payload['data']:
-                    if channel[0] == '/':
-                        _, _, channel = channel.partition('.')
-                    try:
-                        message = loads(bytes_to_str(payload['data']))
-                    except (TypeError, ValueError):
-                        warning('Cannot process event on channel %r: %s',
-                                channel, repr(payload)[:4096], exc_info=1)
-                        raise Empty()
-                    exchange = channel.split('/', 1)[0]
-                    self.connection._deliver(
-                        message, self._fanout_to_queue[exchange])
-                    return True
 
     def _xreadgroup_start(self, timeout=None):
         """Start XREADGROUP operation for async consumption."""
@@ -1169,10 +1075,8 @@ class Channel(virtual.Channel):
             self._pending_queue_to_group = None
 
     def _poll_error(self, type, **options):
-        if type == 'LISTEN':
-            self.subclient.parse_response()
-        else:
-            self.client.parse_response(self.client.connection, type)
+        # Only XREADGROUP type is used now (no LISTEN/BRPOP)
+        self.client.parse_response(self.client.connection, type)
 
     def _get(self, queue):
         """Get single message from queue (synchronous operation)."""
@@ -1401,13 +1305,12 @@ class Channel(virtual.Channel):
 
     def _close_clients(self):
         # Close connections
-        for attr in 'client', 'subclient':
-            try:
-                client = self.__dict__[attr]
-                connection, client.connection = client.connection, None
-                connection.disconnect()
-            except (KeyError, AttributeError, self.ResponseError):
-                pass
+        try:
+            client = self.__dict__['client']
+            connection, client.connection = client.connection, None
+            connection.disconnect()
+        except (KeyError, AttributeError, self.ResponseError):
+            pass
 
     def _prepare_virtual_host(self, vhost):
         if not isinstance(vhost, numbers.Integral):
@@ -1580,12 +1483,6 @@ class Channel(virtual.Channel):
         """Client used to publish messages, BRPOP etc."""
         return self._create_client(asynchronous=True)
 
-    @cached_property
-    def subclient(self):
-        """Pub/Sub connection used to consume fanout queues."""
-        client = self._create_client(asynchronous=True)
-        return client.pubsub()
-
     def _update_queue_cycle(self):
         self._queue_cycle.update(self.active_queues)
 
@@ -1658,14 +1555,7 @@ class Transport(virtual.Transport):
             [add_reader(fd, on_readable, fd) for fd in cycle.fds]
         loop.on_tick.add(on_poll_start)
         loop.call_repeatedly(10, cycle.maybe_restore_messages)
-        health_check_interval = connection.client.transport_options.get(
-            'health_check_interval',
-            DEFAULT_HEALTH_CHECK_INTERVAL
-        )
-        loop.call_repeatedly(
-            health_check_interval,
-            cycle.maybe_check_subclient_health
-        )
+        # No subclient health check needed (removed PUB/SUB support)
 
     def on_readable(self, fileno):
         """Handle AIO event for one of our file descriptors."""

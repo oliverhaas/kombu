@@ -118,6 +118,7 @@ class StreamsClient:
     groups = defaultdict(dict)  # stream_name -> {group_name -> {'consumers': {}, 'pending': []}}
     sets = defaultdict(set)
     message_id_counter = count(1000)
+    _consumed_messages = defaultdict(set)  # group_key -> set of consumed message IDs
 
     def __init__(self, db=None, port=None, connection_pool=None, **kwargs):
         self._called = []
