@@ -196,6 +196,14 @@ class StreamsClient:
         """Mock XCLAIM command."""
         return []
 
+    def xautoclaim(self, name, groupname, consumername, min_idle_time, start, count=100):
+        """Mock XAUTOCLAIM command.
+
+        Returns: [next_cursor, claimed_messages, deleted_ids]
+        """
+        # For simplicity, return empty result indicating scan complete
+        return [b'0-0', [], []]
+
     def xinfo_stream(self, name):
         """Mock XINFO STREAM command."""
         if name not in self.streams:

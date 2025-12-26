@@ -441,7 +441,13 @@ class QoS(virtual.QoS):
             logger.warning(f'Failed to reject {delivery_tag}: {e}')
 
     def restore_visible(self, start=0, num=10, interval=10):
-        """Reclaim messages idle past visibility timeout using XCLAIM."""
+        """Reclaim messages idle past visibility timeout using XAUTOCLAIM.
+
+        XAUTOCLAIM is more efficient than XPENDING + XCLAIM as it:
+        - Combines both operations in a single Redis command
+        - Uses cursor-based scanning for large PELs
+        - Automatically filters by idle time
+        """
         self._vrestore_count += 1
         if (self._vrestore_count - 1) % interval:
             return
@@ -452,25 +458,32 @@ class QoS(virtual.QoS):
             # Check all active streams for stuck messages
             for stream in self.channel._get_all_streams():
                 try:
-                    # Get pending messages for this consumer group
-                    pending = client.xpending_range(
-                        name=stream,
-                        groupname=self.channel.consumer_group,
-                        min='-',
-                        max='+',
-                        count=num
-                    )
+                    # XAUTOCLAIM automatically scans and claims idle messages
+                    # Returns: (next_cursor, claimed_messages, deleted_ids)
+                    cursor = '0-0'
+                    total_claimed = 0
 
-                    for msg in pending or []:
-                        if msg['time_since_delivered'] > idle_time:
-                            # Claim stuck message
-                            client.xclaim(
-                                name=stream,
-                                groupname=self.channel.consumer_group,
-                                consumername=self.channel.consumer_id,
-                                min_idle_time=idle_time,
-                                message_ids=[msg['message_id']]
-                            )
+                    # Continue scanning until we hit our limit or finish
+                    while cursor != '0-0' and total_claimed < num:
+                        result = client.xautoclaim(
+                            name=stream,
+                            groupname=self.channel.consumer_group,
+                            consumername=self.channel.consumer_id,
+                            min_idle_time=idle_time,
+                            start=cursor,
+                            count=min(num - total_claimed, 100)
+                        )
+
+                        # Parse result based on format
+                        # Returns: [cursor, [[id, fields], ...], [deleted_ids]]
+                        cursor = result[0]
+                        claimed_messages = result[1] if len(result) > 1 else []
+                        total_claimed += len(claimed_messages)
+
+                        # If cursor is '0-0', we've scanned the entire PEL
+                        if cursor == b'0-0' or cursor == '0-0':
+                            break
+
                 except self.channel.ResponseError as e:
                     logger.warning(f'Error restoring from {stream}: {e}')
                 except Exception as e:
