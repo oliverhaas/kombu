@@ -1070,21 +1070,56 @@ class Channel(virtual.Channel):
             self.client.parse_response(self.client.connection, type)
 
     def _get(self, queue):
+        """Get single message from queue (synchronous operation)."""
         with self.conn_or_acquire() as client:
+            # Try each priority level
             for pri in self.priority_steps:
-                item = client.rpop(self._q_for_pri(queue, pri))
-                if item:
-                    return loads(bytes_to_str(item))
+                stream_key = self._stream_for_pri(queue, pri)
+
+                # Ensure consumer group
+                self._ensure_consumer_group(stream_key)
+
+                # Try to read one message (non-blocking)
+                messages = client.xreadgroup(
+                    groupname=self.consumer_group,
+                    consumername=self.consumer_id,
+                    streams={stream_key: '>'},
+                    count=1,
+                    block=0  # Non-blocking
+                )
+
+                if messages:
+                    # messages format: [(stream_name, [(message_id, {fields})])]
+                    for stream, message_list in messages:
+                        for message_id, fields in message_list:
+                            # Parse payload
+                            payload = loads(bytes_to_str(fields[b'payload']))
+
+                            # Create delivery tag: stream:message_id
+                            stream_str = bytes_to_str(stream)
+                            message_id_str = bytes_to_str(message_id)
+                            delivery_tag = f"{stream_str}:{message_id_str}"
+
+                            payload['properties']['delivery_tag'] = delivery_tag
+
+                            return payload
+
             raise Empty()
 
     def _size(self, queue):
+        """Get approximate queue size across all priorities."""
         with self.conn_or_acquire() as client:
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    pipe = pipe.llen(self._q_for_pri(queue, pri))
-                sizes = pipe.execute()
-                return sum(size for size in sizes
-                           if isinstance(size, numbers.Integral))
+            total = 0
+            for pri in self.priority_steps:
+                stream_key = self._stream_for_pri(queue, pri)
+                try:
+                    info = client.xinfo_stream(stream_key)
+                    # Get stream length (approximate - includes acked messages)
+                    total += info.get('length', 0)
+                except self.ResponseError:
+                    # Stream doesn't exist yet
+                    pass
+            return total
 
     def _q_for_pri(self, queue, pri):
         pri = self.priority(pri)
@@ -1097,11 +1132,30 @@ class Channel(virtual.Channel):
         return steps[bisect(steps, n) - 1]
 
     def _put(self, queue, message, **kwargs):
-        """Deliver message."""
+        """Deliver message to stream."""
+        import uuid
+
         pri = self._get_message_priority(message, reverse=False)
+        stream_key = self._stream_for_pri(queue, pri)
+
+        # Generate UUID for message tracking/deduplication
+        message_uuid = str(uuid.uuid4())
 
         with self.conn_or_acquire() as client:
-            client.lpush(self._q_for_pri(queue, pri), dumps(message))
+            # Ensure consumer group exists
+            self._ensure_consumer_group(stream_key)
+
+            # Add to stream
+            client.xadd(
+                name=stream_key,
+                fields={
+                    'uuid': message_uuid,
+                    'payload': dumps(message),
+                },
+                id='*',  # Let Redis generate time-ordered ID
+                maxlen=self.stream_maxlen,
+                approximate=True  # More efficient trimming
+            )
 
     def _put_fanout(self, exchange, message, routing_key, **kwargs):
         """Deliver fanout message."""
