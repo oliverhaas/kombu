@@ -10,6 +10,10 @@ Streams-specific transport options:
 * ``consumer_group_prefix``: Prefix for consumer groups (default: 'kombu')
 * ``stream_maxlen``: Maximum stream length for trimming (default: 10000)
 
+Note: This transport does NOT support message priorities. All messages are
+delivered in FIFO order within each stream. If you need priority support,
+use the standard redis transport instead.
+
 Requires Redis 6.2.0+
 """
 
@@ -18,7 +22,6 @@ from __future__ import annotations
 import functools
 import numbers
 import socket
-from bisect import bisect
 from collections import namedtuple
 from contextlib import contextmanager
 from importlib.metadata import version
@@ -62,8 +65,6 @@ DEFAULT_PORT = 6379
 DEFAULT_DB = 0
 
 DEFAULT_HEALTH_CHECK_INTERVAL = 25
-
-PRIORITY_STEPS = [0, 3, 6, 9]
 
 error_classes_t = namedtuple('error_classes_t', (
     'connection_errors', 'channel_errors',
@@ -151,24 +152,54 @@ class GlobalKeyPrefixMixin:
     """Mixin to prefix Redis keys with global_keyprefix."""
 
     # Commands used by Streams transport that need key prefixing
+    # The command name must match exactly what redis-py sends
     PREFIXED_SIMPLE_COMMANDS = [
-        "SADD",               # Binding tables
-        "SREM",               # Binding tables
-        "SMEMBERS",           # Binding tables
-        "XADD",               # Stream operations
-        "XACK",               # Stream operations
-        "XAUTOCLAIM",         # Stream operations
-        "XGROUP_CREATE",      # Stream operations
-        "XGROUP_DELCONSUMER",  # Stream operations
-        "XINFO_STREAM",       # Stream operations
-        "XINFO_CONSUMERS",    # Stream operations
-        "XPENDING_RANGE",     # Stream operations
-        "XRANGE",             # Stream operations
-        "XREADGROUP",         # Stream operations
+        "SADD",                   # Binding tables
+        "SREM",                   # Binding tables
+        "SMEMBERS",               # Binding tables
+        "XADD",                   # Stream operations
+        "XACK",                   # Stream operations
+        "XAUTOCLAIM",             # Stream operations
+        "XGROUP CREATE",          # args[0] is stream name
+        "XGROUP DELCONSUMER",     # args[0] is stream name
+        "XINFO STREAM",           # args[0] is stream name
+        "XINFO CONSUMERS",        # args[0] is stream name
+        "XPENDING",               # args[0] is stream name (xpending_range uses XPENDING)
+        "XRANGE",                 # args[0] is stream name
     ]
+
+    @staticmethod
+    def _prefix_xreadgroup_args(args, prefix):
+        """Custom prefixing for XREADGROUP command.
+
+        XREADGROUP format: GROUP <group> <consumer> [COUNT n] [BLOCK ms] STREAMS <key1> <key2> ... <id1> <id2> ...
+        We need to prefix only the stream keys, not the IDs.
+        """
+        args = list(args)
+        # Find 'STREAMS' keyword (may be bytes or str)
+        streams_idx = None
+        for i, arg in enumerate(args):
+            if arg == 'STREAMS' or arg == b'STREAMS':
+                streams_idx = i
+                break
+
+        if streams_idx is None:
+            return args
+
+        # After STREAMS, we have N keys followed by N IDs
+        # The keys and IDs are equal in number, so we prefix the first half
+        after_streams = args[streams_idx + 1:]
+        num_streams = len(after_streams) // 2
+
+        # Prefix the stream keys (first half)
+        prefixed_keys = [prefix + str(k) for k in after_streams[:num_streams]]
+        stream_ids = after_streams[num_streams:]
+
+        return args[:streams_idx + 1] + prefixed_keys + stream_ids
 
     PREFIXED_COMPLEX_COMMANDS = {
         "DEL": {"args_start": 0, "args_end": None},
+        "XREADGROUP": _prefix_xreadgroup_args,
     }
 
     def _prefix_args(self, args):
@@ -178,9 +209,25 @@ class GlobalKeyPrefixMixin:
         if command in self.PREFIXED_SIMPLE_COMMANDS:
             args[0] = self.global_keyprefix + str(args[0])
         elif command in self.PREFIXED_COMPLEX_COMMANDS:
-            args_start = self.PREFIXED_COMPLEX_COMMANDS[command]["args_start"]
-            args_end = self.PREFIXED_COMPLEX_COMMANDS[command]["args_end"]
-            args = [self.global_keyprefix + str(arg) for arg in args[args_start:args_end]]
+            spec = self.PREFIXED_COMPLEX_COMMANDS[command]
+            if callable(spec):
+                # Custom prefixing function (method needs self)
+                args = spec(args, self.global_keyprefix)
+            else:
+                # Standard range-based prefixing
+                args_start = spec["args_start"]
+                args_end = spec["args_end"]
+
+                pre_args = args[:args_start] if args_start > 0 else []
+                post_args = []
+
+                if args_end is not None:
+                    post_args = args[args_end:]
+
+                args = pre_args + [
+                    self.global_keyprefix + str(arg)
+                    for arg in args[args_start:args_end]
+                ] + post_args
 
         return [command, *args]
 
@@ -237,7 +284,13 @@ class QoS(virtual.QoS):
         metadata = self._delivery_metadata.get(delivery_tag)
         if metadata:
             stream, message_id, group_name = metadata
-            self.channel.client.xack(stream, group_name, message_id)
+            # Stream name from metadata may include global_keyprefix.
+            # Strip it since PrefixedStrictRedis will add it back.
+            stream_key = stream
+            prefix = self.channel.global_keyprefix
+            if prefix and stream.startswith(prefix):
+                stream_key = stream[len(prefix):]
+            self.channel.client.xack(stream_key, group_name, message_id)
             self._delivery_metadata.pop(delivery_tag, None)
         else:
             crit('Cannot ack message: metadata not found for delivery_tag %r',
@@ -257,9 +310,16 @@ class QoS(virtual.QoS):
         stream, message_id, group_name = metadata
         client = self.channel.client
 
+        # Stream name from metadata may include global_keyprefix.
+        # Strip it since PrefixedStrictRedis will add it back.
+        stream_key = stream
+        prefix = self.channel.global_keyprefix
+        if prefix and stream.startswith(prefix):
+            stream_key = stream[len(prefix):]
+
         if not requeue:
             # Just ACK (removes from PEL)
-            client.xack(stream, group_name, message_id)
+            client.xack(stream_key, group_name, message_id)
             self._delivery_metadata.pop(delivery_tag, None)
             super().ack(delivery_tag)
             return
@@ -268,7 +328,7 @@ class QoS(virtual.QoS):
         try:
             # Get the message from PEL
             pending = client.xpending_range(
-                name=stream,
+                name=stream_key,
                 groupname=group_name,
                 min=message_id,
                 max=message_id,
@@ -277,19 +337,19 @@ class QoS(virtual.QoS):
 
             if pending:
                 # Read the actual message content
-                messages = client.xrange(stream, min=message_id, max=message_id, count=1)
+                messages = client.xrange(stream_key, min=message_id, max=message_id, count=1)
                 if messages:
                     msg_id, fields = messages[0]
                     # Re-add to stream first (safer - if this fails, message stays in PEL)
                     client.xadd(
-                        name=stream,
+                        name=stream_key,
                         fields=fields,
                         id='*',
                         maxlen=self.channel.stream_maxlen,
                         approximate=True
                     )
                     # ACK the old one after successful re-add
-                    client.xack(stream, group_name, message_id)
+                    client.xack(stream_key, group_name, message_id)
         except Exception:
             # If requeue fails, log but still ack to prevent infinite retry
             crit('Failed to requeue message %r', delivery_tag, exc_info=True)
@@ -453,6 +513,14 @@ class MultiChannelPoller:
     def get(self, callback, timeout=None):
         self._in_protected_read = True
         try:
+            # First, check for any buffered messages that can be delivered immediately
+            for channel in self._channels:
+                if channel._pending_buffered_messages:
+                    if channel.qos.can_consume():
+                        # Deliver buffered message directly
+                        if channel._xreadgroup_read():
+                            return
+
             for channel in self._channels:
                 # Both regular and fanout queues use XREADGROUP now
                 if channel.active_queues or channel.active_fanout_queues:
@@ -500,11 +568,11 @@ class Channel(virtual.Channel):
     sep = '\x06\x16'
     _in_poll = False
     _fanout_queues = {}
+    _pending_buffered_messages = None  # Buffered messages from previous XREADGROUP
 
     # Streams-specific: no longer need manual unacked tracking
     # (PEL handles this)
     visibility_timeout = 3600   # 1 hour (for XCLAIM)
-    priority_steps = PRIORITY_STEPS
 
     # New Streams-specific options
     consumer_group_prefix = 'kombu'
@@ -583,7 +651,6 @@ class Channel(virtual.Channel):
          'max_connections',
          'health_check_interval',
          'retry_on_timeout',
-         'priority_steps',
          'client_name',
          'consumer_group_prefix',
          'stream_maxlen',
@@ -606,6 +673,8 @@ class Channel(virtual.Channel):
         # Use XREADGROUP for all streams-based consumption (regular + fanout)
         self.handlers = {'XREADGROUP': self._xreadgroup_read}
         self.brpop_timeout = self.connection.brpop_timeout
+        # Buffer for messages from XREADGROUP that haven't been delivered yet
+        self._pending_buffered_messages = []
 
         if self.fanout_prefix:
             if isinstance(self.fanout_prefix, str):
@@ -638,11 +707,8 @@ class Channel(virtual.Channel):
 
     # Streams-specific helper methods
 
-    def _stream_for_pri(self, queue, pri):
-        """Get stream key for queue at priority level."""
-        pri = self.priority(pri)
-        if pri:
-            return f"{queue}{self.sep}{pri}"
+    def _stream_key(self, queue):
+        """Get stream key for queue (no priority support in Streams transport)."""
         return queue
 
     @cached_property
@@ -682,11 +748,7 @@ class Channel(virtual.Channel):
 
     def _get_all_streams(self):
         """Get list of all active streams for this channel."""
-        streams = []
-        for queue in self.active_queues:
-            for pri in self.priority_steps:
-                streams.append(self._stream_for_pri(queue, pri))
-        return streams
+        return [self._stream_key(queue) for queue in self.active_queues]
 
     def _disconnect_pools(self):
         pool = self._pool
@@ -721,8 +783,7 @@ class Channel(virtual.Channel):
 
             # Find destination queues
             for queue in self._lookup(exchange, routing_key):
-                pri = self._get_message_priority(payload, reverse=False)
-                stream_key = self._stream_for_pri(queue, pri)
+                stream_key = self._stream_key(queue)
 
                 with self.conn_or_acquire(client=client) as c:
                     # Ensure consumer group exists
@@ -828,29 +889,27 @@ class Channel(virtual.Channel):
 
     def _xreadgroup_start(self, timeout=None):
         """Start XREADGROUP operation for async consumption."""
+        # Buffered messages are handled in MultiChannelPoller.get before we're called
+        # If there are still buffered messages, skip sending new XREADGROUP
+        if self._pending_buffered_messages:
+            return
+
         if timeout is None:
             timeout = self.brpop_timeout
 
         queues = self._queue_cycle.consume(len(self.active_queues))
 
-        # Build streams dict with priorities (high priority first)
         streams = {}
         queue_to_group = {}  # Track which group to use for each stream
 
         # Add regular queues
         if queues:
-            for pri in reversed(self.priority_steps):  # Reverse for high-to-low priority
-                for queue in queues:
-                    stream_key = self._stream_for_pri(queue, pri)
-                    # Add prefix if needed (for manual send_command)
-                    prefixed_stream_key = stream_key
-                    if self.global_keyprefix:
-                        prefixed_stream_key = self.global_keyprefix + stream_key
-
-                    # Ensure consumer group exists (use prefixed key)
-                    self._ensure_consumer_group(prefixed_stream_key)
-                    streams[prefixed_stream_key] = '>'  # '>' means new messages
-                    queue_to_group[prefixed_stream_key] = self.consumer_group
+            for queue in queues:
+                stream_key = self._stream_key(queue)
+                # Ensure consumer group exists
+                self._ensure_consumer_group(stream_key)
+                streams[stream_key] = '>'  # '>' means new messages
+                queue_to_group[stream_key] = self.consumer_group
 
         # Add fanout streams
         for queue in self.active_fanout_queues:
@@ -859,15 +918,10 @@ class Channel(virtual.Channel):
                 stream_key = self._fanout_stream_key(exchange, routing_key)
                 group_name = self._fanout_consumer_group(queue)
 
-                # Add prefix if needed
-                prefixed_stream_key = stream_key
-                if self.global_keyprefix:
-                    prefixed_stream_key = self.global_keyprefix + stream_key
-
-                # Ensure consumer group exists (use prefixed key)
-                self._ensure_consumer_group(prefixed_stream_key, group_name)
-                streams[prefixed_stream_key] = '>'
-                queue_to_group[prefixed_stream_key] = group_name
+                # Ensure consumer group exists
+                self._ensure_consumer_group(stream_key, group_name)
+                streams[stream_key] = '>'
+                queue_to_group[stream_key] = group_name
 
         if not streams:
             return
@@ -894,13 +948,17 @@ class Channel(virtual.Channel):
             first_group = next(iter(groups.keys()))
             group_streams = groups[first_group]
 
-            # Build XREADGROUP command (stream keys are already prefixed in groups dict)
+            # Build XREADGROUP command
             command_args = ['XREADGROUP', 'GROUP', first_group, self.consumer_id,
                             'COUNT', '1',
                             'BLOCK', str(int(timeout * 1000) if timeout else 0),
                             'STREAMS']
             command_args.extend(group_streams.keys())
             command_args.extend(group_streams.values())
+
+            # Apply global_keyprefix if needed (uses custom _prefix_xreadgroup_args)
+            if self.global_keyprefix:
+                command_args = self.client._prefix_args(command_args)
 
             self.client.connection.send_command(*command_args)
 
@@ -924,8 +982,12 @@ class Channel(virtual.Channel):
                 # Couldn't find queue, skip this message
                 return False
         else:
-            # Regular queue: extract queue name (remove priority suffix if present)
-            queue_name = stream_str.rsplit(self.sep, 1)[0]
+            # Regular queue: extract queue name
+            # Remove global_keyprefix if present
+            stream_without_prefix = stream_str
+            if self.global_keyprefix and stream_str.startswith(self.global_keyprefix):
+                stream_without_prefix = stream_str[len(self.global_keyprefix):]
+            queue_name = stream_without_prefix
 
         # Parse payload
         payload = loads(bytes_to_str(fields[b'payload']))
@@ -950,6 +1012,15 @@ class Channel(virtual.Channel):
     def _xreadgroup_read(self, **options):
         """Read messages from XREADGROUP operation."""
         try:
+            # First check if we have buffered messages from previous read
+            if self._pending_buffered_messages:
+                # Deliver the first buffered message
+                stream, message_id, fields, group_name = self._pending_buffered_messages.pop(0)
+                if self._process_stream_message(stream, message_id, fields, group_name):
+                    return True
+                # Processing failed, try next
+                raise Empty()
+
             try:
                 if not self._pending_streams:
                     raise Empty()
@@ -964,25 +1035,41 @@ class Channel(virtual.Channel):
                 if not messages:
                     raise Empty()
 
-                # Process first message
                 # messages format: [(stream_name, [(message_id, {fields})])]
+                all_messages = []
+
                 for stream, message_list in messages:
                     if not message_list:
                         continue
 
-                    message_id, fields = message_list[0]
+                    for message_id, fields in message_list:
+                        stream_str = bytes_to_str(stream) if isinstance(stream, bytes) else stream
+                        group_name = self._pending_queue_to_group.get(stream_str)
+                        if not group_name:
+                            # Response stream may be prefixed, pending_stream is not
+                            for pending_stream, pending_group in self._pending_queue_to_group.items():
+                                if stream_str.endswith(pending_stream) or stream_str == pending_stream:
+                                    group_name = pending_group
+                                    break
 
-                    # Get the group name for this stream
-                    group_name = self._pending_queue_to_group.get(stream)
-                    if not group_name:
-                        # Try without prefix (response might not be prefixed)
-                        for pending_stream, pending_group in self._pending_queue_to_group.items():
-                            if pending_stream.endswith(bytes_to_str(stream)) or stream == pending_stream.encode():
-                                group_name = pending_group
-                                break
+                        if not group_name:
+                            continue
 
-                    if group_name and self._process_stream_message(stream, message_id, fields, group_name):
-                        return True
+                        all_messages.append((stream, message_id, fields, group_name))
+
+                if not all_messages:
+                    raise Empty()
+
+                # Process first message
+                stream, message_id, fields, group_name = all_messages[0]
+
+                # Buffer remaining messages - they're in PEL, will be delivered next
+                self._pending_buffered_messages = all_messages[1:]
+
+                if self._process_stream_message(stream, message_id, fields, group_name):
+                    return True
+
+                raise Empty()
 
             except self.connection_errors:
                 # if there's a ConnectionError, disconnect so the next
@@ -990,7 +1077,6 @@ class Channel(virtual.Channel):
                 self.client.connection.disconnect()
                 raise
 
-            raise Empty()
         finally:
             self._in_poll = None
             self._pending_streams = None
@@ -1005,77 +1091,61 @@ class Channel(virtual.Channel):
     def _get(self, queue):
         """Get single message from queue (synchronous operation)."""
         with self.conn_or_acquire() as client:
-            # Try each priority level
-            for pri in self.priority_steps:
-                stream_key = self._stream_for_pri(queue, pri)
+            stream_key = self._stream_key(queue)
 
-                # Ensure consumer group
-                self._ensure_consumer_group(stream_key)
+            # Ensure consumer group
+            self._ensure_consumer_group(stream_key)
 
-                # Try to read one message (non-blocking)
-                messages = client.xreadgroup(
-                    groupname=self.consumer_group,
-                    consumername=self.consumer_id,
-                    streams={stream_key: '>'},
-                    count=1,
-                    block=0  # Non-blocking
-                )
+            # Try to read one message (non-blocking)
+            messages = client.xreadgroup(
+                groupname=self.consumer_group,
+                consumername=self.consumer_id,
+                streams={stream_key: '>'},
+                count=1,
+                block=None  # Non-blocking (block=0 would wait forever)
+            )
 
-                if not messages:
-                    continue
+            if not messages:
+                raise Empty()
 
-                # messages format: [(stream_name, [(message_id, {fields})])]
-                for stream, message_list in messages:
-                    for message_id, fields in message_list:
-                        # Parse payload
-                        payload = loads(bytes_to_str(fields[b'payload']))
+            # messages format: [(stream_name, [(message_id, {fields})])]
+            for stream, message_list in messages:
+                for message_id, fields in message_list:
+                    # Parse payload
+                    payload = loads(bytes_to_str(fields[b'payload']))
 
-                        # Set delivery tag using UUID (like base redis transport)
-                        stream_str = bytes_to_str(stream)
-                        message_id_str = bytes_to_str(message_id)
-                        delivery_tag = self._next_delivery_tag()
-                        payload['properties']['delivery_tag'] = delivery_tag
+                    # Set delivery tag using UUID (like base redis transport)
+                    stream_str = bytes_to_str(stream)
+                    message_id_str = bytes_to_str(message_id)
+                    delivery_tag = self._next_delivery_tag()
+                    payload['properties']['delivery_tag'] = delivery_tag
 
-                        # Store metadata for ack/reject operations
-                        self.qos._delivery_metadata[delivery_tag] = (
-                            stream_str, message_id_str, self.consumer_group
-                        )
+                    # Store metadata for ack/reject operations
+                    self.qos._delivery_metadata[delivery_tag] = (
+                        stream_str, message_id_str, self.consumer_group
+                    )
 
-                        return payload
+                    return payload
 
             raise Empty()
 
     def _size(self, queue):
-        """Get approximate queue size across all priorities."""
+        """Get approximate queue size."""
         with self.conn_or_acquire() as client:
-            total = 0
-            for pri in self.priority_steps:
-                stream_key = self._stream_for_pri(queue, pri)
-                try:
-                    info = client.xinfo_stream(stream_key)
-                    # Get stream length (approximate - includes acked messages)
-                    total += info.get('length', 0)
-                except self.ResponseError:
-                    # Stream doesn't exist yet
-                    pass
-            return total
-
-    def _q_for_pri(self, queue, pri):
-        pri = self.priority(pri)
-        if pri:
-            return f"{queue}{self.sep}{pri}"
-        return queue
-
-    def priority(self, n):
-        steps = self.priority_steps
-        return steps[bisect(steps, n) - 1]
+            stream_key = self._stream_key(queue)
+            try:
+                info = client.xinfo_stream(stream_key)
+                # Get stream length (approximate - includes acked messages)
+                return info.get('length', 0)
+            except self.ResponseError:
+                # Stream doesn't exist yet
+                return 0
 
     def _put(self, queue, message, **kwargs):
         """Deliver message to stream."""
         import uuid
 
-        pri = self._get_message_priority(message, reverse=False)
-        stream_key = self._stream_for_pri(queue, pri)
+        stream_key = self._stream_key(queue)
 
         # Generate UUID for message tracking/deduplication
         message_uuid = str(uuid.uuid4())
@@ -1152,32 +1222,46 @@ class Channel(virtual.Channel):
                                        pattern or '',
                                        queue or '']))
 
-    def _delete(self, queue, exchange, routing_key, pattern, *args, **kwargs):
-        """Delete queue and its streams."""
+    def queue_delete(self, queue, if_unused=False, if_empty=False, **kwargs):
+        """Delete queue and its stream.
+
+        Override virtual.Channel.queue_delete because we need to delete
+        the stream even if there are no bindings (the base implementation
+        only calls _delete once per binding).
+        """
+        if if_empty and self._size(queue):
+            return
+
+        # Call parent to handle bindings
+        super().queue_delete(queue, if_unused=if_unused, if_empty=if_empty,
+                             **kwargs)
+
+        # Always delete the stream (parent may not have called _delete if no bindings)
         self.auto_delete_queues.discard(queue)
         with self.conn_or_acquire(client=kwargs.get('client')) as client:
-            # Remove from binding table
-            client.srem(self.keyprefix_queue % (exchange,),
-                        self.sep.join([routing_key or '',
-                                       pattern or '',
-                                       queue or '']))
+            stream_key = self._stream_key(queue)
+            try:
+                client.delete(stream_key)
+            except self.ResponseError:
+                pass
 
-            # Delete all priority streams
-            for pri in self.priority_steps:
-                stream_key = self._stream_for_pri(queue, pri)
-                try:
-                    client.delete(stream_key)
-                except self.ResponseError:
-                    pass
+    def _delete(self, queue, *args, **kwargs):
+        """Delete queue binding (stream deletion handled by queue_delete)."""
+        # Extract binding info from args if present
+        if len(args) >= 3:
+            exchange, routing_key, pattern = args[0], args[1], args[2]
+            with self.conn_or_acquire() as client:
+                # Remove from binding table
+                client.srem(self.keyprefix_queue % (exchange,),
+                            self.sep.join([routing_key or '',
+                                           pattern or '',
+                                           queue or '']))
 
     def _has_queue(self, queue, **kwargs):
-        """Check if any priority stream exists for queue."""
+        """Check if stream exists for queue."""
         with self.conn_or_acquire() as client:
-            for pri in self.priority_steps:
-                stream_key = self._stream_for_pri(queue, pri)
-                if client.exists(stream_key):
-                    return True
-            return False
+            stream_key = self._stream_key(queue)
+            return client.exists(stream_key)
 
     def get_table(self, exchange):
         key = self.keyprefix_queue % exchange
@@ -1190,27 +1274,24 @@ class Channel(virtual.Channel):
             return [tuple(bytes_to_str(val).split(self.sep)) for val in values]
 
     def _purge(self, queue):
-        """Purge all messages from queue by deleting and recreating streams."""
+        """Purge all messages from queue by deleting and recreating stream."""
         with self.conn_or_acquire() as client:
-            total = 0
-            for pri in self.priority_steps:
-                stream_key = self._stream_for_pri(queue, pri)
-                try:
-                    # Get size before deletion
-                    info = client.xinfo_stream(stream_key)
-                    count = info.get('length', 0)
+            stream_key = self._stream_key(queue)
+            try:
+                # Get size before deletion
+                info = client.xinfo_stream(stream_key)
+                count = info.get('length', 0)
 
-                    # Delete stream
-                    client.delete(stream_key)
+                # Delete stream
+                client.delete(stream_key)
 
-                    # Recreate consumer group
-                    self._ensure_consumer_group(stream_key)
+                # Recreate consumer group
+                self._ensure_consumer_group(stream_key)
 
-                    total += count
-                except self.ResponseError:
-                    # Stream doesn't exist
-                    pass
-            return total
+                return count
+            except self.ResponseError:
+                # Stream doesn't exist
+                return 0
 
     def close(self):
         self._closing = True
@@ -1233,35 +1314,29 @@ class Channel(virtual.Channel):
         super().close()
 
     def _cleanup_consumer_and_delete_if_last(self, queue, client):
-        """Remove this consumer from queue's groups, delete queue if last consumer."""
+        """Remove this consumer from queue's groups, delete queue if last consumer.
+
+        Note: In kombu's virtual transport architecture, we track consumers
+        locally via _tag_to_queue. When the last local consumer is cancelled,
+        we delete the queue. We don't rely on Redis's consumer tracking since
+        XINFO CONSUMERS shows consumers until they're idle-timed out.
+        """
         # Determine the consumer group name for this queue
         if queue in self._fanout_queues:
             group_name = self._fanout_consumer_group(queue)
         else:
             group_name = self.consumer_group
 
-        # Check all priority streams for this queue
-        for pri in self.priority_steps:
-            stream_key = self._stream_for_pri(queue, pri)
+        stream_key = self._stream_key(queue)
 
-            try:
-                # Remove this consumer from the group
-                client.xgroup_delconsumer(stream_key, group_name, self.consumer_id)
-            except self.ResponseError:
-                # Consumer, group, or stream doesn't exist - that's fine
-                pass
+        try:
+            # Remove this consumer from the group
+            client.xgroup_delconsumer(stream_key, group_name, self.consumer_id)
+        except self.ResponseError:
+            # Consumer, group, or stream doesn't exist - that's fine
+            pass
 
-            # Check if any consumers remain in the group
-            try:
-                consumers = client.xinfo_consumers(stream_key, group_name)
-                if consumers:
-                    # There are still other consumers, don't delete
-                    return
-            except self.ResponseError:
-                # Group or stream doesn't exist - continue to next priority
-                pass
-
-        # No consumers remain in any priority stream, safe to delete
+        # Delete the queue - caller has already verified no local consumers remain
         self.queue_delete(queue, client=client)
 
     def _close_clients(self):

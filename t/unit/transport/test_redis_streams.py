@@ -381,16 +381,12 @@ class test_StreamsChannel:
         StreamsClient._group_consumers.clear()
         StreamsClient.message_id_counter = count(1000)
 
-    def test_stream_for_pri(self, connection):
-        """Test stream key generation for priorities."""
+    def test_stream_key(self, connection):
+        """Test stream key generation (no priority support)."""
         channel = connection.default_channel
 
-        # Priority 0 (no suffix)
-        assert channel._stream_for_pri('myqueue', 0) == 'myqueue'
-
-        # Priority 3
-        sep = channel.sep
-        assert channel._stream_for_pri('myqueue', 3) == f'myqueue{sep}3'
+        # Stream key is just the queue name
+        assert channel._stream_key('myqueue') == 'myqueue'
 
     def test_consumer_group_name(self, connection):
         """Test consumer group name generation."""
@@ -415,7 +411,7 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test body',
-            'properties': {'priority': 0, 'delivery_tag': 'tag'},
+            'properties': {'delivery_tag': 'tag'},
             'headers': {},
         }
 
@@ -423,7 +419,7 @@ class test_StreamsChannel:
         channel._put('testqueue', message)
 
         # Verify stream was created
-        stream_key = channel._stream_for_pri('testqueue', 0)
+        stream_key = channel._stream_key('testqueue')
         assert stream_key in StreamsClient.streams
         assert len(StreamsClient.streams[stream_key]) == 1
 
@@ -432,30 +428,28 @@ class test_StreamsChannel:
         assert retrieved['body'] == 'test body'
         assert 'delivery_tag' in retrieved['properties']
 
-    def test_priority_ordering(self, connection):
-        """Test messages are consumed in priority order."""
+    def test_fifo_ordering(self, connection):
+        """Test messages are consumed in FIFO order (no priority support)."""
         channel = connection.default_channel
 
-        # Put messages with different priorities
-        for pri in [6, 0, 3]:
+        # Put messages in order
+        for i in range(3):
             message = {
-                'body': f'priority {pri}',
-                'properties': {'priority': pri},
+                'body': f'message {i}',
+                'properties': {},
                 'headers': {},
             }
             channel._put('testqueue', message)
 
-        # Get messages in priority order (0 is highest priority)
-        # Note: In real usage, basic_get() would call qos.append() which tracks messages,
-        # but we're calling _get() directly so messages aren't tracked
+        # Get messages in FIFO order
         msg1 = channel._get('testqueue')
-        assert 'priority 0' in msg1['body']
+        assert 'message 0' in msg1['body']
 
         msg2 = channel._get('testqueue')
-        assert 'priority 3' in msg2['body']
+        assert 'message 1' in msg2['body']
 
         msg3 = channel._get('testqueue')
-        assert 'priority 6' in msg3['body']
+        assert 'message 2' in msg3['body']
 
     def test_size(self, connection):
         """Test queue size."""
@@ -463,7 +457,7 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -483,7 +477,7 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -504,17 +498,17 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
         channel._put('testqueue', message)
 
-        # Delete queue
-        channel._delete('testqueue', '', '', '')
+        # Delete queue using queue_delete (which handles stream deletion)
+        channel.queue_delete('testqueue')
 
         # Stream should be gone
-        stream_key = channel._stream_for_pri('testqueue', 0)
+        stream_key = channel._stream_key('testqueue')
         assert stream_key not in StreamsClient.streams
 
     def test_has_queue(self, connection):
@@ -527,7 +521,7 @@ class test_StreamsChannel:
         # Add message
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
         channel._put('testqueue', message)
@@ -541,7 +535,7 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -592,7 +586,7 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -617,7 +611,7 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -639,11 +633,11 @@ class test_StreamsChannel:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
-        stream_key = channel._stream_for_pri('testqueue', 0)
+        stream_key = channel._stream_key('testqueue')
         group_name = channel.consumer_group
 
         # Put message should create group
@@ -652,30 +646,6 @@ class test_StreamsChannel:
         # Verify group was created
         key = f"{stream_key}:{group_name}"
         assert key in channel.client.consumer_groups_created
-
-    def test_multiple_priorities_create_multiple_streams(self, connection):
-        """Test that different priorities use different streams."""
-        channel = connection.default_channel
-
-        for pri in [0, 3, 6]:
-            message = {
-                'body': f'priority {pri}',
-                'properties': {'priority': pri},
-                'headers': {},
-            }
-            channel._put('testqueue', message)
-
-        # Should have 3 different streams
-        stream_0 = channel._stream_for_pri('testqueue', 0)
-        stream_3 = channel._stream_for_pri('testqueue', 3)
-        stream_6 = channel._stream_for_pri('testqueue', 6)
-
-        assert stream_0 in StreamsClient.streams
-        assert stream_3 in StreamsClient.streams
-        assert stream_6 in StreamsClient.streams
-
-        assert stream_0 != stream_3
-        assert stream_3 != stream_6
 
     def test_put_fanout(self, connection):
         """Test putting fanout message."""
@@ -708,13 +678,13 @@ class test_StreamsChannel:
         # Put a message
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
         channel._put(queue_name, message)
 
         # Verify stream exists
-        stream_key = channel._stream_for_pri(queue_name, 0)
+        stream_key = channel._stream_key(queue_name)
         assert stream_key in StreamsClient.streams
 
         # Close channel
@@ -743,7 +713,7 @@ class test_StreamsQoS:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -764,7 +734,7 @@ class test_StreamsQoS:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -785,7 +755,7 @@ class test_StreamsQoS:
 
         message = {
             'body': 'test message',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -813,7 +783,7 @@ class test_StreamsQoS:
 
         message = {
             'body': 'test',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -860,7 +830,7 @@ class test_StreamsQoS:
         for i in range(5):
             message = {
                 'body': f'test {i}',
-                'properties': {'priority': 0},
+                'properties': {},
                 'headers': {},
             }
             channel._put('testqueue', message)
@@ -881,7 +851,7 @@ class test_StreamsQoS:
 
         message = {
             'body': 'test message',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -926,7 +896,7 @@ class test_StreamsQoS:
 
         message = {
             'body': 'test message',
-            'properties': {'priority': 0},
+            'properties': {},
             'headers': {},
         }
 
@@ -971,7 +941,7 @@ class test_StreamsQoS:
         qos = channel.qos
 
         # Add a queue first
-        channel._put('testqueue', {'body': 'test', 'properties': {'priority': 0}, 'headers': {}})
+        channel._put('testqueue', {'body': 'test', 'properties': {}, 'headers': {}})
 
         # Call restore_visible - should not raise
         # (interval=1 means it runs every call)
@@ -1026,10 +996,6 @@ class test_StreamsTransport:
         )
         channel = conn.default_channel
         assert channel.sep == '::'
-
-        # Test that separator is used in stream keys
-        stream_key = channel._stream_for_pri('myqueue', 3)
-        assert '::' in stream_key
         conn.close()
 
     def test_transport_connection_errors(self):
