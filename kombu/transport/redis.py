@@ -1432,7 +1432,14 @@ class Transport(virtual.Transport):
             [add_reader(fd, on_readable, fd) for fd in cycle.fds]
         loop.on_tick.add(on_poll_start)
         loop.call_repeatedly(10, cycle.maybe_restore_messages)
-        loop.call_repeatedly(10, cycle.maybe_update_messages_index)
+        # Update message index at visibility_timeout/3 to keep messages alive
+        visibility_timeout = connection.client.transport_options.get(
+            'visibility_timeout', 3600  # default 1 hour
+        )
+        loop.call_repeatedly(
+            visibility_timeout / 3,
+            cycle.maybe_update_messages_index
+        )
         health_check_interval = connection.client.transport_options.get(
             'health_check_interval',
             DEFAULT_HEALTH_CHECK_INTERVAL
