@@ -1194,6 +1194,7 @@ class test_Channel:
         transport.cycle.on_poll_init.assert_called_with(loop.poller)
         loop.call_repeatedly.assert_has_calls([
             call(10, transport.cycle.maybe_restore_messages),
+            call(10, transport.cycle.maybe_update_messages_index),
             call(25, transport.cycle.maybe_check_subclient_health),
         ])
         loop.on_tick.add.assert_called()
@@ -1239,6 +1240,7 @@ class test_Channel:
         transport.cycle.on_poll_init.assert_called_with(loop.poller)
         loop.call_repeatedly.assert_has_calls([
             call(10, transport.cycle.maybe_restore_messages),
+            call(10, transport.cycle.maybe_update_messages_index),
             call(15, transport.cycle.maybe_check_subclient_health),
         ])
         loop.on_tick.add.assert_called()

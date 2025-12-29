@@ -395,6 +395,21 @@ class QoS(virtual.QoS):
             return pipe.zrem(self.messages_index_key, delivery_tag) \
                        .hdel(self.messages_key, delivery_tag)
 
+    def maybe_update_messages_index(self):
+        """Update scores of delivered messages to current time.
+
+        This acts as a heartbeat to keep messages from being restored
+        by restore_visible() while they are still being processed.
+        """
+        if not self._delivered:
+            return
+        now = time()
+        with self.channel.conn_or_acquire() as client:
+            with client.pipeline() as pipe:
+                for tag in self._delivered:
+                    pipe.zadd(self.messages_index_key, {tag: now})
+                pipe.execute()
+
     def restore_visible(self, start=0, num=10, interval=10):
         self._vrestore_count += 1
         if (self._vrestore_count - 1) % interval:
@@ -554,6 +569,12 @@ class MultiChannelPoller:
                 return channel.qos.restore_visible(
                     num=channel.messages_restore_limit,
                 )
+
+    def maybe_update_messages_index(self):
+        """Update message index scores to keep delivered messages alive."""
+        for channel in self._channels:
+            if channel.active_queues:
+                channel.qos.maybe_update_messages_index()
 
     def maybe_check_subclient_health(self):
         for channel in self._channels:
@@ -1411,6 +1432,7 @@ class Transport(virtual.Transport):
             [add_reader(fd, on_readable, fd) for fd in cycle.fds]
         loop.on_tick.add(on_poll_start)
         loop.call_repeatedly(10, cycle.maybe_restore_messages)
+        loop.call_repeatedly(10, cycle.maybe_update_messages_index)
         health_check_interval = connection.client.transport_options.get(
             'health_check_interval',
             DEFAULT_HEALTH_CHECK_INTERVAL
