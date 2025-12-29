@@ -361,21 +361,9 @@ class QoS(virtual.QoS):
         self._vrestore_count = 0
 
     def append(self, message, delivery_tag):
-        delivery = message.delivery_info
-        EX, RK = delivery['exchange'], delivery['routing_key']
-        # TODO: Remove this once we solely on Redis-py 3.0.0+
-        if redis.VERSION[0] >= 3:
-            # Redis-py changed the format of zadd args in v3.0.0
-            zadd_args = [{delivery_tag: time()}]
-        else:
-            zadd_args = [time(), delivery_tag]
-
-        with self.pipe_or_acquire() as pipe:
-            pipe.zadd(self.messages_index_key, *zadd_args) \
-                .hset(self.messages_key, delivery_tag,
-                      dumps([message._raw, EX, RK])) \
-                .execute()
-            super().append(message, delivery_tag)
+        # Message is already stored in messages hash at publish time.
+        # Just track it in _delivered for local state management.
+        super().append(message, delivery_tag)
 
     def restore_unacked(self, client=None):
         with self.channel.conn_or_acquire(client) as client:
@@ -429,10 +417,12 @@ class QoS(virtual.QoS):
         def restore_transaction(pipe):
             p = pipe.hget(self.messages_key, tag)
             pipe.multi()
-            self._remove_from_indices(tag, pipe)
+            # Don't remove from indices - message stays tracked.
+            # _do_restore_message will update hash with redelivered flag
+            # and push delivery_tag back to queue.
             if p:
                 M, EX, RK = loads(bytes_to_str(p))  # json is unicode
-                self.channel._do_restore_message(M, EX, RK, pipe, leftmost)
+                self.channel._do_restore_message(M, EX, RK, pipe, leftmost, tag)
 
         with self.channel.conn_or_acquire(client) as client:
             client.transaction(restore_transaction, self.messages_key)
@@ -794,18 +784,26 @@ class Channel(virtual.Channel):
             self.connection.cycle._on_connection_disconnect(connection)
 
     def _do_restore_message(self, payload, exchange, routing_key,
-                            pipe, leftmost=False):
+                            pipe, leftmost=False, delivery_tag=None):
         try:
             try:
                 payload['headers']['redelivered'] = True
                 payload['properties']['delivery_info']['redelivered'] = True
             except KeyError:
                 pass
+            # Get delivery_tag from payload if not provided
+            if delivery_tag is None:
+                delivery_tag = payload['properties']['delivery_tag']
             for queue in self._lookup(exchange, routing_key):
                 pri = self._get_message_priority(payload, reverse=False)
-
+                # Push only delivery_tag to queue, message stays in hash
                 (pipe.lpush if leftmost else pipe.rpush)(
-                    self._q_for_pri(queue, pri), dumps(payload),
+                    self._q_for_pri(queue, pri), delivery_tag,
+                )
+                # Update the message in hash with redelivered flag
+                pipe.hset(
+                    self.messages_key, delivery_tag,
+                    dumps([payload, exchange, routing_key])
                 )
         except Exception:
             crit('Could not restore message: %r', payload, exc_info=True)
@@ -818,10 +816,11 @@ class Channel(virtual.Channel):
         def restore_transaction(pipe):
             P = pipe.hget(self.messages_key, tag)
             pipe.multi()
-            pipe.hdel(self.messages_key, tag)
             if P:
                 M, EX, RK = loads(bytes_to_str(P))  # json is unicode
-                self._do_restore_message(M, EX, RK, pipe, leftmost)
+                # _do_restore_message updates the hash with redelivered flag
+                # and pushes delivery_tag back to queue
+                self._do_restore_message(M, EX, RK, pipe, leftmost, tag)
 
         with self.conn_or_acquire() as client:
             client.transaction(restore_transaction, self.messages_key)
@@ -988,11 +987,18 @@ class Channel(virtual.Channel):
                 self.client.connection.disconnect()
                 raise
             if dest__item:
-                dest, item = dest__item
+                dest, delivery_tag = dest__item
                 dest = bytes_to_str(dest).rsplit(self.sep, 1)[0]
+                delivery_tag = bytes_to_str(delivery_tag)
                 self._queue_cycle.rotate(dest)
-                self.connection._deliver(loads(bytes_to_str(item)), dest)
-                return True
+                # Fetch message from hash
+                payload = self.client.hget(self.messages_key, delivery_tag)
+                if payload:
+                    message, _, _ = loads(bytes_to_str(payload))
+                    self.connection._deliver(message, dest)
+                    return True
+                # Message was deleted before we could fetch it, treat as empty
+                raise Empty()
             else:
                 raise Empty()
         finally:
@@ -1007,9 +1013,16 @@ class Channel(virtual.Channel):
     def _get(self, queue):
         with self.conn_or_acquire() as client:
             for pri in self.priority_steps:
-                item = client.rpop(self._q_for_pri(queue, pri))
-                if item:
-                    return loads(bytes_to_str(item))
+                delivery_tag = client.rpop(self._q_for_pri(queue, pri))
+                if delivery_tag:
+                    delivery_tag = bytes_to_str(delivery_tag)
+                    # Fetch message from hash
+                    payload = client.hget(self.messages_key, delivery_tag)
+                    if payload:
+                        message, _, _ = loads(bytes_to_str(payload))
+                        return message
+                    # Message was deleted (acked) before we could fetch it
+                    # This shouldn't happen normally, but handle gracefully
             raise Empty()
 
     def _size(self, queue):
@@ -1034,9 +1047,27 @@ class Channel(virtual.Channel):
     def _put(self, queue, message, **kwargs):
         """Deliver message."""
         pri = self._get_message_priority(message, reverse=False)
+        props = message['properties']
+        delivery_tag = props['delivery_tag']
+        delivery_info = props['delivery_info']
+        exchange = delivery_info['exchange']
+        routing_key = delivery_info['routing_key']
+
+        # Use current time as score; will be updated when message is consumed
+        score = time()
 
         with self.conn_or_acquire() as client:
-            client.lpush(self._q_for_pri(queue, pri), dumps(message))
+            with client.pipeline() as pipe:
+                # Store message in hash
+                pipe.hset(
+                    self.messages_key, delivery_tag,
+                    dumps([message, exchange, routing_key])
+                )
+                # Add to sorted set for visibility tracking
+                pipe.zadd(self.messages_index_key, {delivery_tag: score})
+                # Push only delivery_tag to queue
+                pipe.lpush(self._q_for_pri(queue, pri), delivery_tag)
+                pipe.execute()
 
     def _put_fanout(self, exchange, message, routing_key, **kwargs):
         """Deliver fanout message."""

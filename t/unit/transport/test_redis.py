@@ -9,7 +9,7 @@ from itertools import count
 from queue import Empty
 from queue import Queue as _Queue
 from typing import TYPE_CHECKING
-from unittest.mock import ANY, Mock, call, patch
+from unittest.mock import ANY, MagicMock, Mock, call, patch
 
 import pytest
 
@@ -119,14 +119,10 @@ class Client:
         self.sets[key].add(member)
 
     def zadd(self, key, *args):
-        if redis.redis.VERSION[0] >= 3:
-            (mapping,) = args
-            for item in mapping:
-                self.sets[key].add(item)
-        else:
-            # TODO: remove me when we drop support for Redis-py v2
-            (score1, member1) = args
-            self.sets[key].add(member1)
+        # Always use modern dict format {member: score}
+        (mapping,) = args
+        for item in mapping:
+            self.sets[key].add(item)
 
     def smembers(self, key):
         return self.sets.get(key, set())
@@ -540,26 +536,27 @@ class test_Channel:
 
     def test_do_restore_message(self):
         client = Mock(name='client')
-        pl1 = {'body': 'BODY'}
-        spl1 = dumps(pl1)
+        pl1 = {'body': 'BODY', 'properties': {'delivery_tag': 'tag1'}}
         lookup = self.channel._lookup = Mock(name='_lookup')
         lookup.return_value = {'george', 'elaine'}
         self.channel._do_restore_message(
             pl1, 'ex', 'rkey', client,
         )
+        # Now we push only delivery_tag, not the full message
         client.rpush.assert_has_calls([
-            call('george', spl1), call('elaine', spl1),
+            call('george', 'tag1'), call('elaine', 'tag1'),
         ], any_order=True)
+        # Also verify hset is called with updated payload
+        assert client.hset.call_count == 2
 
         client = Mock(name='client')
-        pl2 = {'body': 'BODY2', 'headers': {'x-funny': 1}}
-        headers_after = dict(pl2['headers'], redelivered=True)
-        spl2 = dumps(dict(pl2, headers=headers_after))
+        pl2 = {'body': 'BODY2', 'headers': {'x-funny': 1},
+               'properties': {'delivery_tag': 'tag2'}}
         self.channel._do_restore_message(
             pl2, 'ex', 'rkey', client,
         )
-        client.rpush.assert_any_call('george', spl2)
-        client.rpush.assert_any_call('elaine', spl2)
+        client.rpush.assert_any_call('george', 'tag2')
+        client.rpush.assert_any_call('elaine', 'tag2')
 
         client.rpush.side_effect = KeyError()
         with patch('kombu.transport.redis.crit') as crit:
@@ -627,8 +624,15 @@ class test_Channel:
             payload, 'exchange', 'routing_key', client,
         )
 
+        # Now we push only delivery_tag, not the full message
+        delivery_tag = payload['properties']['delivery_tag']
         client.rpush.assert_called_with(self.channel._q_for_pri(queue, 3),
-                                        dumps(result_payload))
+                                        delivery_tag)
+        # Also verify hset is called with updated payload
+        client.hset.assert_called_with(
+            self.channel.messages_key, delivery_tag,
+            dumps([result_payload, 'exchange', 'routing_key'])
+        )
 
     def test_restore_no_messages(self):
         message = Mock(name='message')
@@ -642,8 +646,8 @@ class test_Channel:
                 restore_transaction(pipe)
 
                 pipe.multi.assert_called_once_with()
-                pipe.hdel.assert_called_once_with(
-                        messages_key, message.delivery_tag)
+                # No hdel - we don't delete messages on restore anymore
+                pipe.hdel.assert_not_called()
                 loads.assert_not_called()
 
             client = self.channel._create_client = Mock(name='client')
@@ -671,10 +675,12 @@ class test_Channel:
 
                 loads.assert_called_with(result)
                 pipe.multi.assert_called_once_with()
-                pipe.hdel.assert_called_once_with(
-                        messages_key, message.delivery_tag)
+                # No hdel - we don't delete messages on restore anymore
+                pipe.hdel.assert_not_called()
                 loads.assert_called()
-                restore.assert_called_with('M', 'EX', 'RK', pipe, False)
+                # Now _do_restore_message receives delivery_tag as argument
+                restore.assert_called_with(
+                    'M', 'EX', 'RK', pipe, False, message.delivery_tag)
 
             client = self.channel._create_client = Mock(name='client')
             client = client()
@@ -888,24 +894,51 @@ class test_Channel:
         c().publish.assert_called_with('/{db}.exchange', dumps(body))
 
     def test_put_priority(self):
-        client = self.channel._create_client = Mock(name='client')
-        msg1 = {'properties': {'priority': 3}}
+        client_mock = Mock(name='client')
+        pipeline_mock = MagicMock(name='pipeline')
+        client_mock.return_value.pipeline.return_value.__enter__ = Mock(
+            return_value=pipeline_mock
+        )
+        client_mock.return_value.pipeline.return_value.__exit__ = Mock(
+            return_value=False
+        )
+        self.channel._create_client = client_mock
+
+        msg1 = {
+            'properties': {
+                'priority': 3,
+                'delivery_tag': 'tag1',
+                'delivery_info': {'exchange': '', 'routing_key': 'george'},
+            }
+        }
 
         self.channel._put('george', msg1)
-        client().lpush.assert_called_with(
-            self.channel._q_for_pri('george', 3), dumps(msg1),
+        # Now we push only delivery_tag, not the full message
+        pipeline_mock.lpush.assert_called_with(
+            self.channel._q_for_pri('george', 3), 'tag1',
         )
 
-        msg2 = {'properties': {'priority': 313}}
+        msg2 = {
+            'properties': {
+                'priority': 313,
+                'delivery_tag': 'tag2',
+                'delivery_info': {'exchange': '', 'routing_key': 'george'},
+            }
+        }
         self.channel._put('george', msg2)
-        client().lpush.assert_called_with(
-            self.channel._q_for_pri('george', 9), dumps(msg2),
+        pipeline_mock.lpush.assert_called_with(
+            self.channel._q_for_pri('george', 9), 'tag2',
         )
 
-        msg3 = {'properties': {}}
+        msg3 = {
+            'properties': {
+                'delivery_tag': 'tag3',
+                'delivery_info': {'exchange': '', 'routing_key': 'george'},
+            }
+        }
         self.channel._put('george', msg3)
-        client().lpush.assert_called_with(
-            self.channel._q_for_pri('george', 0), dumps(msg3),
+        pipeline_mock.lpush.assert_called_with(
+            self.channel._q_for_pri('george', 0), 'tag3',
         )
 
     def test_delete(self):
@@ -1420,11 +1453,11 @@ class test_Channel:
             # To be compatible with all supported redis versions,
             # take into account only `call.args`.
             call_args = [call.args for call in mock_execute_command.mock_calls]
+            # restore_by_tag no longer removes from indices, just gets message
+            # and calls _do_restore_message (which updates hash and pushes to queue)
             assert call_args == [
                 ('WATCH', 'foo_messages'),
                 ('HGET', 'foo_messages', 'test-tag'),
-                ('ZREM', 'foo_messages_index', 'test-tag'),
-                ('HDEL', 'foo_messages', 'test-tag')
             ]
 
 
