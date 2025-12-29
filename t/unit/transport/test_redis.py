@@ -634,8 +634,8 @@ class test_Channel:
         message = Mock(name='message')
 
         with patch('kombu.transport.redis.loads') as loads:
-            def transaction_handler(restore_transaction, unacked_key):
-                assert unacked_key == self.channel.unacked_key
+            def transaction_handler(restore_transaction, messages_key):
+                assert messages_key == self.channel.messages_key
                 pipe = Mock(name='pipe')
                 pipe.hget.return_value = None
 
@@ -643,7 +643,7 @@ class test_Channel:
 
                 pipe.multi.assert_called_once_with()
                 pipe.hdel.assert_called_once_with(
-                        unacked_key, message.delivery_tag)
+                        messages_key, message.delivery_tag)
                 loads.assert_not_called()
 
             client = self.channel._create_client = Mock(name='client')
@@ -657,8 +657,8 @@ class test_Channel:
 
         with patch('kombu.transport.redis.loads') as loads:
 
-            def transaction_handler(restore_transaction, unacked_key):
-                assert unacked_key == self.channel.unacked_key
+            def transaction_handler(restore_transaction, messages_key):
+                assert messages_key == self.channel.messages_key
                 restore = self.channel._do_restore_message = Mock(
                     name='_do_restore_message',
                 )
@@ -672,7 +672,7 @@ class test_Channel:
                 loads.assert_called_with(result)
                 pipe.multi.assert_called_once_with()
                 pipe.hdel.assert_called_once_with(
-                        unacked_key, message.delivery_tag)
+                        messages_key, message.delivery_tag)
                 loads.assert_called()
                 restore.assert_called_with('M', 'EX', 'RK', pipe, False)
 
@@ -1421,10 +1421,10 @@ class test_Channel:
             # take into account only `call.args`.
             call_args = [call.args for call in mock_execute_command.mock_calls]
             assert call_args == [
-                ('WATCH', 'foo_unacked'),
-                ('HGET', 'foo_unacked', 'test-tag'),
-                ('ZREM', 'foo_unacked_index', 'test-tag'),
-                ('HDEL', 'foo_unacked', 'test-tag')
+                ('WATCH', 'foo_messages'),
+                ('HGET', 'foo_messages', 'test-tag'),
+                ('ZREM', 'foo_messages_index', 'test-tag'),
+                ('HDEL', 'foo_messages', 'test-tag')
             ]
 
 
@@ -1626,7 +1626,7 @@ class test_MultiChannelPoller:
         p._channels = [chan1]
         p.on_poll_init(poller)
         chan1.qos.restore_visible.assert_called_with(
-            num=chan1.unacked_restore_limit,
+            num=chan1.messages_restore_limit,
         )
 
     def test_handle_event(self):

@@ -30,12 +30,12 @@ Transport Options
 * ``sep``
 * ``ack_emulation``: (bool) If set to True transport will
   simulate Acknowledge of AMQP protocol.
-* ``unacked_key``
-* ``unacked_index_key``
-* ``unacked_mutex_key``
-* ``unacked_mutex_expire``
+* ``messages_key``
+* ``messages_index_key``
+* ``messages_mutex_key``
+* ``messages_mutex_expire``
 * ``visibility_timeout``
-* ``unacked_restore_limit``
+* ``messages_restore_limit``
 * ``fanout_prefix``
 * ``fanout_patterns``
 * ``global_keyprefix``: (str) The global key prefix to be prepended to all keys
@@ -371,8 +371,8 @@ class QoS(virtual.QoS):
             zadd_args = [time(), delivery_tag]
 
         with self.pipe_or_acquire() as pipe:
-            pipe.zadd(self.unacked_index_key, *zadd_args) \
-                .hset(self.unacked_key, delivery_tag,
+            pipe.zadd(self.messages_index_key, *zadd_args) \
+                .hset(self.messages_key, delivery_tag,
                       dumps([message._raw, EX, RK])) \
                 .execute()
             super().append(message, delivery_tag)
@@ -404,8 +404,8 @@ class QoS(virtual.QoS):
 
     def _remove_from_indices(self, delivery_tag, pipe=None):
         with self.pipe_or_acquire(pipe) as pipe:
-            return pipe.zrem(self.unacked_index_key, delivery_tag) \
-                       .hdel(self.unacked_key, delivery_tag)
+            return pipe.zrem(self.messages_index_key, delivery_tag) \
+                       .hdel(self.messages_key, delivery_tag)
 
     def restore_visible(self, start=0, num=10, interval=10):
         self._vrestore_count += 1
@@ -414,10 +414,10 @@ class QoS(virtual.QoS):
         with self.channel.conn_or_acquire() as client:
             ceil = time() - self.visibility_timeout
             try:
-                with Mutex(client, self.unacked_mutex_key,
-                           self.unacked_mutex_expire):
+                with Mutex(client, self.messages_mutex_key,
+                           self.messages_mutex_expire):
                     visible = client.zrevrangebyscore(
-                        self.unacked_index_key, ceil, 0,
+                        self.messages_index_key, ceil, 0,
                         start=num and start, num=num, withscores=True)
                     for tag, score in visible or []:
                         self.restore_by_tag(tag, client)
@@ -427,7 +427,7 @@ class QoS(virtual.QoS):
     def restore_by_tag(self, tag, client=None, leftmost=False):
 
         def restore_transaction(pipe):
-            p = pipe.hget(self.unacked_key, tag)
+            p = pipe.hget(self.messages_key, tag)
             pipe.multi()
             self._remove_from_indices(tag, pipe)
             if p:
@@ -435,23 +435,23 @@ class QoS(virtual.QoS):
                 self.channel._do_restore_message(M, EX, RK, pipe, leftmost)
 
         with self.channel.conn_or_acquire(client) as client:
-            client.transaction(restore_transaction, self.unacked_key)
+            client.transaction(restore_transaction, self.messages_key)
 
     @cached_property
-    def unacked_key(self):
-        return self.channel.unacked_key
+    def messages_key(self):
+        return self.channel.messages_key
 
     @cached_property
-    def unacked_index_key(self):
-        return self.channel.unacked_index_key
+    def messages_index_key(self):
+        return self.channel.messages_index_key
 
     @cached_property
-    def unacked_mutex_key(self):
-        return self.channel.unacked_mutex_key
+    def messages_mutex_key(self):
+        return self.channel.messages_mutex_key
 
     @cached_property
-    def unacked_mutex_expire(self):
-        return self.channel.unacked_mutex_expire
+    def messages_mutex_expire(self):
+        return self.channel.messages_mutex_expire
 
     @cached_property
     def visibility_timeout(self):
@@ -554,7 +554,7 @@ class MultiChannelPoller:
         self.poller = poller
         for channel in self._channels:
             return channel.qos.restore_visible(
-                num=channel.unacked_restore_limit,
+                num=channel.messages_restore_limit,
             )
 
     def maybe_restore_messages(self):
@@ -562,7 +562,7 @@ class MultiChannelPoller:
             if channel.active_queues:
                 # only need to do this once, as they are not local to channel.
                 return channel.qos.restore_visible(
-                    num=channel.unacked_restore_limit,
+                    num=channel.messages_restore_limit,
                 )
 
     def maybe_check_subclient_health(self):
@@ -636,11 +636,11 @@ class Channel(virtual.Channel):
     _in_listen = False
     _fanout_queues = {}
     ack_emulation = True
-    unacked_key = 'unacked'
-    unacked_index_key = 'unacked_index'
-    unacked_mutex_key = 'unacked_mutex'
-    unacked_mutex_expire = 300  # 5 minutes
-    unacked_restore_limit = None
+    messages_key = 'messages'
+    messages_index_key = 'messages_index'
+    messages_mutex_key = 'messages_mutex'
+    messages_mutex_expire = 300  # 5 minutes
+    messages_restore_limit = None
     visibility_timeout = 3600   # 1 hour
     priority_steps = PRIORITY_STEPS
     socket_timeout = None
@@ -705,12 +705,12 @@ class Channel(virtual.Channel):
         virtual.Channel.from_transport_options +
         ('sep',
          'ack_emulation',
-         'unacked_key',
-         'unacked_index_key',
-         'unacked_mutex_key',
-         'unacked_mutex_expire',
+         'messages_key',
+         'messages_index_key',
+         'messages_mutex_key',
+         'messages_mutex_expire',
          'visibility_timeout',
-         'unacked_restore_limit',
+         'messages_restore_limit',
          'fanout_prefix',
          'fanout_patterns',
          'global_keyprefix',
@@ -816,15 +816,15 @@ class Channel(virtual.Channel):
         tag = message.delivery_tag
 
         def restore_transaction(pipe):
-            P = pipe.hget(self.unacked_key, tag)
+            P = pipe.hget(self.messages_key, tag)
             pipe.multi()
-            pipe.hdel(self.unacked_key, tag)
+            pipe.hdel(self.messages_key, tag)
             if P:
                 M, EX, RK = loads(bytes_to_str(P))  # json is unicode
                 self._do_restore_message(M, EX, RK, pipe, leftmost)
 
         with self.conn_or_acquire() as client:
-            client.transaction(restore_transaction, self.unacked_key)
+            client.transaction(restore_transaction, self.messages_key)
 
     def _restore_at_beginning(self, message):
         return self._restore(message, leftmost=True)
