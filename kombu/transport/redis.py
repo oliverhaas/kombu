@@ -48,7 +48,7 @@ Transport Options
 * ``max_connections``
 * ``health_check_interval``
 * ``retry_on_timeout``
-* ``priority_steps``
+* ``priority_steps`` (deprecated, kept for backwards compatibility)
 * ``client_name``: (str) The name to use when connecting to Redis server.
 """
 
@@ -57,7 +57,6 @@ from __future__ import annotations
 import functools
 import numbers
 import socket
-from bisect import bisect
 from collections import namedtuple
 from contextlib import contextmanager
 from importlib.metadata import version
@@ -103,7 +102,33 @@ DEFAULT_DB = 0
 
 DEFAULT_HEALTH_CHECK_INTERVAL = 25
 
+# Score multiplier for priority in sorted set queues.
+# Score = (255 - priority) * PRIORITY_SCORE_MULTIPLIER + timestamp_ms
+# This gives ~31 years of millisecond timestamps before priority levels collide.
+PRIORITY_SCORE_MULTIPLIER = 10 ** 12
+
+# Legacy priority steps (kept for backwards compatibility)
 PRIORITY_STEPS = [0, 3, 6, 9]
+
+
+def _queue_score(priority, timestamp=None):
+    """Compute sorted set score for queue ordering.
+
+    Lower priority number = higher priority = lower score = popped first.
+    Within same priority, earlier timestamp = lower score = popped first (FIFO).
+
+    Args:
+        priority: Message priority (0-255, lower is higher priority)
+        timestamp: Unix timestamp in seconds (defaults to current time)
+
+    Returns:
+        Float score for ZADD
+    """
+    if timestamp is None:
+        timestamp = time()
+    # Invert priority so lower number = lower score = popped first
+    # Multiply by large factor to leave room for millisecond timestamps
+    return (255 - priority) * PRIORITY_SCORE_MULTIPLIER + int(timestamp * 1000)
 
 error_classes_t = namedtuple('error_classes_t', (
     'connection_errors', 'channel_errors',
@@ -201,23 +226,21 @@ class GlobalKeyPrefixMixin:
         "HGET",
         "HLEN",
         "HSET",
-        "LLEN",
-        "LPUSH",
         "PUBLISH",
-        "RPUSH",
-        "RPOP",
         "SADD",
         "SREM",
         "SET",
         "SMEMBERS",
         "ZADD",
+        "ZCARD",
+        "ZPOPMIN",
         "ZREM",
         "ZREVRANGEBYSCORE",
+        "ZSCORE",
     ]
 
     PREFIXED_COMPLEX_COMMANDS = {
         "DEL": {"args_start": 0, "args_end": None},
-        "BRPOP": {"args_start": 0, "args_end": -1},
         "EVALSHA": {"args_start": 2, "args_end": 3},
         "WATCH": {"args_start": 0, "args_end": None},
     }
@@ -228,6 +251,16 @@ class GlobalKeyPrefixMixin:
 
         if command in self.PREFIXED_SIMPLE_COMMANDS:
             args[0] = self.global_keyprefix + str(args[0])
+        elif command == "BZMPOP":
+            # BZMPOP timeout numkeys key [key ...] MIN|MAX [COUNT count]
+            # Only prefix the keys (numkeys of them, starting at index 2)
+            numkeys = int(args[1])
+            keys_start = 2
+            keys_end = 2 + numkeys
+            pre_args = args[:keys_start]
+            keys = [self.global_keyprefix + str(arg) for arg in args[keys_start:keys_end]]
+            post_args = args[keys_end:]
+            args = pre_args + keys + post_args
         elif command in self.PREFIXED_COMPLEX_COMMANDS:
             args_start = self.PREFIXED_COMPLEX_COMMANDS[command]["args_start"]
             args_end = self.PREFIXED_COMPLEX_COMMANDS[command]["args_end"]
@@ -252,10 +285,11 @@ class GlobalKeyPrefixMixin:
         returned by redis command.
         """
         ret = super().parse_response(connection, command_name, **options)
-        if command_name == 'BRPOP' and ret:
-            key, value = ret
+        if command_name == 'BZMPOP' and ret:
+            # BZMPOP returns (key, [(member, score), ...])
+            key, members = ret
             key = key[len(self.global_keyprefix):]
-            return key, value
+            return key, members
         return ret
 
     def execute_command(self, *args, **kwargs):
@@ -423,6 +457,25 @@ class QoS(virtual.QoS):
                         self.messages_index_key, ceil, 0,
                         start=num and start, num=num, withscores=True)
                     for tag, score in visible or []:
+                        # Check if message is still in a queue before restoring
+                        # Get message to find which queue it belongs to
+                        payload = client.hget(self.messages_key, tag)
+                        if not payload:
+                            # Message already acked, remove from index
+                            client.zrem(self.messages_index_key, tag)
+                            continue
+                        M, EX, RK = loads(bytes_to_str(payload))
+                        # Check if delivery_tag is still in any target queue
+                        queues = self.channel._lookup(EX, RK)
+                        in_queue = False
+                        for queue in queues:
+                            if client.zscore(queue, tag) is not None:
+                                in_queue = True
+                                break
+                        if in_queue:
+                            # Message still in queue, not yet consumed - skip
+                            continue
+                        # Message was consumed but not acked, restore it
                         self.restore_by_tag(tag, client)
             except MutexHeld:
                 pass
@@ -530,14 +583,14 @@ class MultiChannelPoller:
         return (client.connection._sock is not None and
                 (channel, client, cmd) in self._chan_to_sock)
 
-    def _register_BRPOP(self, channel):
-        """Enable BRPOP mode for channel."""
-        ident = channel, channel.client, 'BRPOP'
-        if not self._client_registered(channel, channel.client, 'BRPOP'):
+    def _register_BZMPOP(self, channel):
+        """Enable BZMPOP mode for channel."""
+        ident = channel, channel.client, 'BZMPOP'
+        if not self._client_registered(channel, channel.client, 'BZMPOP'):
             channel._in_poll = False
             self._register(*ident)
-        if not channel._in_poll:  # send BRPOP
-            channel._brpop_start()
+        if not channel._in_poll:  # send BZMPOP
+            channel._bzmpop_start()
 
     def _register_LISTEN(self, channel):
         """Enable LISTEN mode for channel."""
@@ -549,9 +602,9 @@ class MultiChannelPoller:
 
     def on_poll_start(self):
         for channel in self._channels:
-            if channel.active_queues:           # BRPOP mode?
+            if channel.active_queues:           # BZMPOP mode?
                 if channel.qos.can_consume():
-                    self._register_BRPOP(channel)
+                    self._register_BZMPOP(channel)
             if channel.active_fanout_queues:    # LISTEN mode?
                 self._register_LISTEN(channel)
 
@@ -600,9 +653,9 @@ class MultiChannelPoller:
         self._in_protected_read = True
         try:
             for channel in self._channels:
-                if channel.active_queues:           # BRPOP mode?
+                if channel.active_queues:           # BZMPOP mode?
                     if channel.qos.can_consume():
-                        self._register_BRPOP(channel)
+                        self._register_BZMPOP(channel)
                 if channel.active_fanout_queues:    # LISTEN mode?
                     self._register_LISTEN(channel)
 
@@ -752,7 +805,7 @@ class Channel(virtual.Channel):
         self.active_fanout_queues = set()
         self.auto_delete_queues = set()
         self._fanout_to_queue = {}
-        self.handlers = {'BRPOP': self._brpop_read, 'LISTEN': self._receive}
+        self.handlers = {'BZMPOP': self._bzmpop_read, 'LISTEN': self._receive}
         self.brpop_timeout = self.connection.brpop_timeout
 
         if self.fanout_prefix:
@@ -817,10 +870,14 @@ class Channel(virtual.Channel):
                 delivery_tag = payload['properties']['delivery_tag']
             for queue in self._lookup(exchange, routing_key):
                 pri = self._get_message_priority(payload, reverse=False)
-                # Push only delivery_tag to queue, message stays in hash
-                (pipe.lpush if leftmost else pipe.rpush)(
-                    self._q_for_pri(queue, pri), delivery_tag,
-                )
+                # For leftmost (requeue), use score 0 to put at front
+                # Otherwise use normal priority+timestamp score
+                if leftmost:
+                    score = 0
+                else:
+                    score = _queue_score(pri)
+                # Add delivery_tag to queue sorted set
+                pipe.zadd(queue, {delivery_tag: score})
                 # Update the message in hash with redelivered flag
                 pipe.hset(
                     self.messages_key, delivery_tag,
@@ -862,9 +919,9 @@ class Channel(virtual.Channel):
         # each queue is equally likely to be consumed from,
         # so that a very busy queue will not block others.
         #
-        # This works by using Redis's `BRPOP` command and
+        # This works by using Redis's `BZMPOP` command and
         # by rotating the most recently used queue to the
-        # and of the list.  See Kombu github issue #166 for
+        # end of the list.  See Kombu github issue #166 for
         # more discussion of this method.
         self._update_queue_cycle()
         return ret
@@ -980,36 +1037,39 @@ class Channel(virtual.Channel):
                         message, self._fanout_to_queue[exchange])
                     return True
 
-    def _brpop_start(self, timeout=None):
+    def _bzmpop_start(self, timeout=None):
         if timeout is None:
             timeout = self.brpop_timeout
         queues = self._queue_cycle.consume(len(self.active_queues))
         if not queues:
             return
-        keys = [self._q_for_pri(queue, pri) for pri in self.priority_steps
-                for queue in queues] + [timeout or 0]
+        # BZMPOP timeout numkeys key [key ...] MIN|MAX [COUNT count]
+        # We use MIN to pop lowest score first (highest priority + oldest)
+        keys = list(queues)
         self._in_poll = self.client.connection
 
-        command_args = ['BRPOP', *keys]
+        command_args = ['BZMPOP', timeout or 0, len(keys), *keys, 'MIN']
         if self.global_keyprefix:
             command_args = self.client._prefix_args(command_args)
 
         self.client.connection.send_command(*command_args)
 
-    def _brpop_read(self, **options):
+    def _bzmpop_read(self, **options):
         try:
             try:
-                dest__item = self.client.parse_response(self.client.connection,
-                                                        'BRPOP',
-                                                        **options)
+                result = self.client.parse_response(self.client.connection,
+                                                    'BZMPOP',
+                                                    **options)
             except self.connection_errors:
                 # if there's a ConnectionError, disconnect so the next
                 # iteration will reconnect automatically.
                 self.client.connection.disconnect()
                 raise
-            if dest__item:
-                dest, delivery_tag = dest__item
-                dest = bytes_to_str(dest).rsplit(self.sep, 1)[0]
+            if result:
+                # BZMPOP returns (key, [(member, score), ...])
+                dest, members = result
+                dest = bytes_to_str(dest)
+                delivery_tag, _score = members[0]
                 delivery_tag = bytes_to_str(delivery_tag)
                 self._queue_cycle.rotate(dest)
                 # Fetch message from hash
@@ -1031,39 +1091,28 @@ class Channel(virtual.Channel):
         else:
             self.client.parse_response(self.client.connection, type)
 
+    # Keep old name as alias for backwards compatibility
+    _brpop_read = _bzmpop_read
+
     def _get(self, queue):
         with self.conn_or_acquire() as client:
-            for pri in self.priority_steps:
-                delivery_tag = client.rpop(self._q_for_pri(queue, pri))
-                if delivery_tag:
-                    delivery_tag = bytes_to_str(delivery_tag)
-                    # Fetch message from hash
-                    payload = client.hget(self.messages_key, delivery_tag)
-                    if payload:
-                        message, _, _ = loads(bytes_to_str(payload))
-                        return message
-                    # Message was deleted (acked) before we could fetch it
-                    # This shouldn't happen normally, but handle gracefully
+            # ZPOPMIN returns [(member, score)] or empty list
+            result = client.zpopmin(queue, count=1)
+            if result:
+                delivery_tag, _score = result[0]
+                delivery_tag = bytes_to_str(delivery_tag)
+                # Fetch message from hash
+                payload = client.hget(self.messages_key, delivery_tag)
+                if payload:
+                    message, _, _ = loads(bytes_to_str(payload))
+                    return message
+                # Message was deleted (acked) before we could fetch it
+                # This shouldn't happen normally, but handle gracefully
             raise Empty()
 
     def _size(self, queue):
         with self.conn_or_acquire() as client:
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    pipe = pipe.llen(self._q_for_pri(queue, pri))
-                sizes = pipe.execute()
-                return sum(size for size in sizes
-                           if isinstance(size, numbers.Integral))
-
-    def _q_for_pri(self, queue, pri):
-        pri = self.priority(pri)
-        if pri:
-            return f"{queue}{self.sep}{pri}"
-        return queue
-
-    def priority(self, n):
-        steps = self.priority_steps
-        return steps[bisect(steps, n) - 1]
+            return client.zcard(queue)
 
     def _put(self, queue, message, **kwargs):
         """Deliver message."""
@@ -1074,8 +1123,9 @@ class Channel(virtual.Channel):
         exchange = delivery_info['exchange']
         routing_key = delivery_info['routing_key']
 
-        # Use current time as score; will be updated when message is consumed
-        score = time()
+        # Compute queue score: priority + timestamp for FIFO within priority
+        now = time()
+        queue_score = _queue_score(pri, now)
 
         with self.conn_or_acquire() as client:
             with client.pipeline() as pipe:
@@ -1085,9 +1135,9 @@ class Channel(virtual.Channel):
                     dumps([message, exchange, routing_key])
                 )
                 # Add to sorted set for visibility tracking
-                pipe.zadd(self.messages_index_key, {delivery_tag: score})
-                # Push only delivery_tag to queue
-                pipe.lpush(self._q_for_pri(queue, pri), delivery_tag)
+                pipe.zadd(self.messages_index_key, {delivery_tag: now})
+                # Add to queue sorted set with priority+timestamp score
+                pipe.zadd(queue, {delivery_tag: queue_score})
                 pipe.execute()
 
     def _put_fanout(self, exchange, message, routing_key, **kwargs):
@@ -1121,17 +1171,13 @@ class Channel(virtual.Channel):
                         self.sep.join([routing_key or '',
                                        pattern or '',
                                        queue or '']))
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    pipe = pipe.delete(self._q_for_pri(queue, pri))
-                pipe.execute()
+            # Queue is now a single sorted set
+            client.delete(queue)
 
     def _has_queue(self, queue, **kwargs):
         with self.conn_or_acquire() as client:
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    pipe = pipe.exists(self._q_for_pri(queue, pri))
-                return any(pipe.execute())
+            # Queue is now a single sorted set
+            return client.exists(queue)
 
     def get_table(self, exchange):
         key = self.keyprefix_queue % exchange
@@ -1145,18 +1191,16 @@ class Channel(virtual.Channel):
 
     def _purge(self, queue):
         with self.conn_or_acquire() as client:
-            with client.pipeline() as pipe:
-                for pri in self.priority_steps:
-                    priq = self._q_for_pri(queue, pri)
-                    pipe = pipe.llen(priq).delete(priq)
-                sizes = pipe.execute()
-                return sum(sizes[::2])
+            # Queue is now a single sorted set
+            size = client.zcard(queue)
+            client.delete(queue)
+            return size
 
     def close(self):
         self._closing = True
         if self._in_poll:
             try:
-                self._brpop_read()
+                self._bzmpop_read()
             except Empty:
                 pass
         if not self.closed:

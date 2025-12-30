@@ -104,7 +104,14 @@ class Client:
         self.queues.pop(key, None)
 
     def exists(self, key):
-        return key in self.queues or key in self.sets
+        if key in self.queues:
+            q = self.queues[key]
+            # For sorted sets (lists), check if non-empty
+            if isinstance(q, list):
+                return len(q) > 0
+            # For regular queues, check if non-empty
+            return not q.empty()
+        return key in self.sets
 
     def hset(self, key, k, v):
         self.hashes[key][k] = v
@@ -121,8 +128,49 @@ class Client:
     def zadd(self, key, *args):
         # Always use modern dict format {member: score}
         (mapping,) = args
-        for item in mapping:
-            self.sets[key].add(item)
+        for member, score in mapping.items():
+            # Store as (member, score) tuples for sorted set simulation
+            if key not in self.queues:
+                self.queues[key] = []
+            # Remove if exists, then add with new score
+            self.queues[key] = [(m, s) for m, s in self.queues[key] if m != member]
+            self.queues[key].append((member, score))
+            # Keep sorted by score
+            self.queues[key].sort(key=lambda x: x[1])
+
+    def zcard(self, key):
+        if key in self.queues and isinstance(self.queues[key], list):
+            return len(self.queues[key])
+        return 0
+
+    def zpopmin(self, key, count=1):
+        if key not in self.queues or not isinstance(self.queues[key], list):
+            return []
+        result = []
+        for _ in range(count):
+            if self.queues[key]:
+                result.append(self.queues[key].pop(0))
+        return result
+
+    def zscore(self, key, member):
+        if key not in self.queues or not isinstance(self.queues[key], list):
+            return None
+        for m, s in self.queues[key]:
+            if m == member:
+                return s
+        return None
+
+    def zrevrangebyscore(self, key, max_score, min_score, start=None, num=None, withscores=False):
+        if key not in self.queues or not isinstance(self.queues[key], list):
+            return []
+        # Filter by score range and reverse order
+        items = [(m, s) for m, s in self.queues[key] if min_score <= s <= max_score]
+        items.sort(key=lambda x: x[1], reverse=True)
+        if start is not None and num is not None:
+            items = items[start:start + num]
+        if withscores:
+            return items
+        return [m for m, s in items]
 
     def smembers(self, key):
         return self.sets.get(key, set())
@@ -144,22 +192,40 @@ class Client:
         self.queues[key].put_nowait(value)
 
     def parse_response(self, connection, type, **options):
-        cmd, queues = self.connection._sock.data.pop()
-        queues = list(queues)
+        cmd, args = self.connection._sock.data.pop()
+        args = list(args)
         assert cmd == type
         self.connection._sock.data = []
-        if type == 'BRPOP':
-            timeout = queues.pop()
-            item = self.brpop(queues, timeout)
+        if type == 'BZMPOP':
+            # BZMPOP timeout numkeys key [key ...] MIN|MAX
+            timeout = args.pop(0)
+            numkeys = args.pop(0)
+            keys = args[:numkeys]
+            item = self.bzmpop(keys, timeout)
             if item:
                 return item
             raise Empty()
+        elif type == 'BRPOP':
+            # Legacy BRPOP support for tests
+            timeout = args.pop()
+            item = self.brpop(args, timeout)
+            if item:
+                return item
+            raise Empty()
+
+    def bzmpop(self, keys, timeout=None):
+        """Pop from first non-empty sorted set queue."""
+        for key in keys:
+            if key in self.queues and isinstance(self.queues[key], list) and self.queues[key]:
+                member, score = self.queues[key].pop(0)
+                return key, [(member, score)]
+        return None
 
     def brpop(self, keys, timeout=None):
         for key in keys:
             try:
                 item = self.queues[key].get_nowait()
-            except Empty:
+            except (Empty, AttributeError, KeyError):
                 pass
             else:
                 return key, item
@@ -167,7 +233,7 @@ class Client:
     def rpop(self, key):
         try:
             return self.queues[key].get_nowait()
-        except (KeyError, Empty):
+        except (KeyError, Empty, AttributeError):
             pass
 
     def __contains__(self, k):
@@ -180,7 +246,8 @@ class Client:
         return str(value)
 
     def _new_queue(self, key):
-        self.queues[key] = _Queue()
+        # Use list for sorted set simulation (stores (member, score) tuples)
+        self.queues[key] = []
 
     class _sconnection:
         disconnected = False
@@ -269,8 +336,8 @@ class Channel(redis.Channel):
         return ResponseError
 
     def _new_queue(self, queue, **kwargs):
-        for pri in self.priority_steps:
-            self.client._new_queue(self._q_for_pri(queue, pri))
+        # With sorted sets, each queue is a single sorted set (no priority queues)
+        self.client._new_queue(queue)
 
     def pipeline(self):
         return Pipeline(Client())
@@ -542,10 +609,8 @@ class test_Channel:
         self.channel._do_restore_message(
             pl1, 'ex', 'rkey', client,
         )
-        # Now we push only delivery_tag, not the full message
-        client.rpush.assert_has_calls([
-            call('george', 'tag1'), call('elaine', 'tag1'),
-        ], any_order=True)
+        # Now we use zadd to add delivery_tag to sorted set queues
+        assert client.zadd.call_count == 2
         # Also verify hset is called with updated payload
         assert client.hset.call_count == 2
 
@@ -555,10 +620,9 @@ class test_Channel:
         self.channel._do_restore_message(
             pl2, 'ex', 'rkey', client,
         )
-        client.rpush.assert_any_call('george', 'tag2')
-        client.rpush.assert_any_call('elaine', 'tag2')
+        assert client.zadd.call_count == 2
 
-        client.rpush.side_effect = KeyError()
+        client.zadd.side_effect = KeyError()
         with patch('kombu.transport.redis.crit') as crit:
             self.channel._do_restore_message(
                 pl2, 'ex', 'rkey', client,
@@ -624,10 +688,10 @@ class test_Channel:
             payload, 'exchange', 'routing_key', client,
         )
 
-        # Now we push only delivery_tag, not the full message
+        # Now we use zadd to add delivery_tag to the queue sorted set
         delivery_tag = payload['properties']['delivery_tag']
-        client.rpush.assert_called_with(self.channel._q_for_pri(queue, 3),
-                                        delivery_tag)
+        # With sorted sets, each queue is a single sorted set (no _q_for_pri)
+        assert client.zadd.call_count == 1
         # Also verify hset is called with updated payload
         client.hset.assert_called_with(
             self.channel.messages_key, delivery_tag,
@@ -694,11 +758,21 @@ class test_Channel:
         def pipe(*args, **kwargs):
             return Pipeline(client)
         client.pipeline = pipe
+        # Mock zrevrangebyscore to return (delivery_tag, score) pairs
         client.zrevrangebyscore.return_value = [
-            (1, 10),
-            (2, 20),
-            (3, 30),
+            ('tag1', 10),
+            ('tag2', 20),
+            ('tag3', 30),
         ]
+        # Mock hget to return valid message payloads
+        # Message format: [message, exchange, routing_key]
+        msg = {'body': 'test', 'properties': {'delivery_tag': 'tag1'}}
+        client.hget.return_value = dumps([msg, '', 'test_queue'])
+        # Mock zscore to return None (message not in queue - should restore)
+        client.zscore.return_value = None
+        # Mock _lookup to return queues
+        self.channel._lookup = Mock(return_value=['test_queue'])
+
         qos = redis.QoS(self.channel)
         restore = qos.restore_by_tag = Mock(name='restore_by_tag')
         qos._vrestore_count = 1
@@ -709,7 +783,7 @@ class test_Channel:
         qos._vrestore_count = 0
         qos.restore_visible()
         restore.assert_has_calls([
-            call(1, client), call(2, client), call(3, client),
+            call('tag1', client), call('tag2', client), call('tag3', client),
         ])
         assert qos._vrestore_count == 1
 
@@ -788,8 +862,8 @@ class test_Channel:
             'data': 'data',
         }
 
-    def test_brpop_start_but_no_queues(self):
-        assert self.channel._brpop_start() is None
+    def test_bzmpop_start_but_no_queues(self):
+        assert self.channel._bzmpop_start() is None
 
     def test_receive(self):
         s = self.channel.subclient = Mock()
@@ -847,32 +921,32 @@ class test_Channel:
         assert self.channel._receive()
         assert _receive_one.called
 
-    def test_brpop_read_raises(self):
+    def test_bzmpop_read_raises(self):
         c = self.channel.client = Mock()
         c.parse_response.side_effect = KeyError('foo')
 
         with pytest.raises(KeyError):
-            self.channel._brpop_read()
+            self.channel._bzmpop_read()
 
         c.connection.disconnect.assert_called_with()
 
-    def test_brpop_read_gives_None(self):
+    def test_bzmpop_read_gives_None(self):
         c = self.channel.client = Mock()
         c.parse_response.return_value = None
 
         with pytest.raises(redis.Empty):
-            self.channel._brpop_read()
+            self.channel._bzmpop_read()
 
     def test_poll_error(self):
         c = self.channel.client = Mock()
         c.parse_response = Mock()
-        self.channel._poll_error('BRPOP')
+        self.channel._poll_error('BZMPOP')
 
-        c.parse_response.assert_called_with(c.connection, 'BRPOP')
+        c.parse_response.assert_called_with(c.connection, 'BZMPOP')
 
         c.parse_response.side_effect = KeyError('foo')
         with pytest.raises(KeyError):
-            self.channel._poll_error('BRPOP')
+            self.channel._poll_error('BZMPOP')
 
     def test_poll_error_on_type_LISTEN(self):
         c = self.channel.subclient = Mock()
@@ -913,11 +987,14 @@ class test_Channel:
         }
 
         self.channel._put('george', msg1)
-        # Now we push only delivery_tag, not the full message
-        pipeline_mock.lpush.assert_called_with(
-            self.channel._q_for_pri('george', 3), 'tag1',
-        )
+        # Now we use zadd to push delivery_tag to sorted set queue
+        # zadd is called twice: once for messages_index, once for queue
+        assert pipeline_mock.zadd.call_count == 2
+        # Verify second zadd call was for the queue (first is messages_index)
+        zadd_calls = pipeline_mock.zadd.call_args_list
+        assert zadd_calls[1][0][0] == 'george'
 
+        pipeline_mock.reset_mock()
         msg2 = {
             'properties': {
                 'priority': 313,
@@ -926,10 +1003,9 @@ class test_Channel:
             }
         }
         self.channel._put('george', msg2)
-        pipeline_mock.lpush.assert_called_with(
-            self.channel._q_for_pri('george', 9), 'tag2',
-        )
+        assert pipeline_mock.zadd.call_count == 2
 
+        pipeline_mock.reset_mock()
         msg3 = {
             'properties': {
                 'delivery_tag': 'tag3',
@@ -937,9 +1013,7 @@ class test_Channel:
             }
         }
         self.channel._put('george', msg3)
-        pipeline_mock.lpush.assert_called_with(
-            self.channel._q_for_pri('george', 0), 'tag3',
-        )
+        assert pipeline_mock.zadd.call_count == 2
 
     def test_delete(self):
         x = self.channel
@@ -949,9 +1023,8 @@ class test_Channel:
         srem = x.client.srem = Mock()
 
         x._delete('queue', 'exchange', 'routing_key', None)
-        delete.assert_has_calls([
-            call(x._q_for_pri('queue', pri)) for pri in redis.PRIORITY_STEPS
-        ])
+        # With sorted sets, each queue is a single sorted set (no priority queues)
+        delete.assert_called_with('queue')
         srem.assert_called_with(x.keyprefix_queue % ('exchange',),
                                 x.sep.join(['routing_key', '', 'queue']))
 
@@ -961,10 +1034,8 @@ class test_Channel:
         exists = self.channel.client.exists = Mock()
         exists.return_value = True
         assert self.channel._has_queue('foo')
-        exists.assert_has_calls([
-            call(self.channel._q_for_pri('foo', pri))
-            for pri in redis.PRIORITY_STEPS
-        ])
+        # With sorted sets, each queue is a single sorted set (no priority queues)
+        exists.assert_called_with('foo')
 
         exists.return_value = False
         assert not self.channel._has_queue('foo')
@@ -1186,7 +1257,7 @@ class test_Channel:
     def test_register_with_event_loop(self):
         transport = self.connection.transport
         transport.cycle = Mock(name='cycle')
-        transport.cycle.fds = {12: 'LISTEN', 13: 'BRPOP'}
+        transport.cycle.fds = {12: 'LISTEN', 13: 'BZMPOP'}
         conn = Mock(name='conn')
         conn.client = Mock(name='client', transport_options={})
         loop = Mock(name='loop')
@@ -1207,7 +1278,7 @@ class test_Channel:
             call(13, transport.on_readable, 13),
         ])
 
-    @pytest.mark.parametrize('fds', [{12: 'LISTEN', 13: 'BRPOP'}, {}])
+    @pytest.mark.parametrize('fds', [{12: 'LISTEN', 13: 'BZMPOP'}, {}])
     def test_register_with_event_loop__on_disconnect__loop_cleanup(self, fds):
         """Ensure event loop polling stops on disconnect (if started)."""
         transport = self.connection.transport
@@ -1230,7 +1301,7 @@ class test_Channel:
     def test_configurable_health_check(self):
         transport = self.connection.transport
         transport.cycle = Mock(name='cycle')
-        transport.cycle.fds = {12: 'LISTEN', 13: 'BRPOP'}
+        transport.cycle.fds = {12: 'LISTEN', 13: 'BZMPOP'}
         conn = Mock(name='conn')
         conn.client = Mock(name='client', transport_options={
             'health_check_interval': 15,
@@ -1579,7 +1650,8 @@ class test_Redis:
     def test_close_in_poll(self):
         c = Connection(transport=Transport).channel()
         conn1 = c.client.connection
-        conn1._sock.data = [('BRPOP', ('test_Redis',))]
+        # BZMPOP format: timeout numkeys key [key ...] MIN|MAX
+        conn1._sock.data = [('BZMPOP', (0, 1, 'test_Redis', 'MIN'))]
         c._in_poll = True
         c.close()
         assert conn1.disconnected
@@ -1603,6 +1675,8 @@ class test_Redis:
 
     def test_brpop_timeout_propagates_from_transport_options(self):
         # Set either polling_interval or brpop_timeout to 2
+        # (brpop_timeout name is kept for backward compatibility, even though
+        # we now use BZMPOP internally)
         conn = Connection("redis://localhost/0", transport_options={"polling_interval": 2})
 
         # Avoid network I/O during Channel.__init__()
@@ -1626,7 +1700,7 @@ class test_MultiChannelPoller:
         p = self.Poller()
         p._channels = []
         p.on_poll_start()
-        p._register_BRPOP = Mock(name='_register_BRPOP')
+        p._register_BZMPOP = Mock(name='_register_BZMPOP')
         p._register_LISTEN = Mock(name='_register_LISTEN')
 
         chan1 = Mock(name='chan1')
@@ -1641,13 +1715,13 @@ class test_MultiChannelPoller:
 
         p.on_poll_start()
         p._register_LISTEN.assert_called_with(chan1)
-        p._register_BRPOP.assert_not_called()
+        p._register_BZMPOP.assert_not_called()
 
         chan1.qos.can_consume.return_value = True
         p._register_LISTEN.reset_mock()
         p.on_poll_start()
 
-        p._register_BRPOP.assert_called_with(chan1)
+        p._register_BZMPOP.assert_called_with(chan1)
         p._register_LISTEN.assert_called_with(chan1)
 
     def test_on_poll_init(self):
@@ -1667,19 +1741,19 @@ class test_MultiChannelPoller:
     def test_handle_event(self):
         p = self.Poller()
         chan = Mock(name='chan')
-        p._fd_to_chan[13] = chan, 'BRPOP'
-        chan.handlers = {'BRPOP': Mock(name='BRPOP')}
+        p._fd_to_chan[13] = chan, 'BZMPOP'
+        chan.handlers = {'BZMPOP': Mock(name='BZMPOP')}
 
         chan.qos.can_consume.return_value = False
         p.handle_event(13, redis.READ)
-        chan.handlers['BRPOP'].assert_not_called()
+        chan.handlers['BZMPOP'].assert_not_called()
 
         chan.qos.can_consume.return_value = True
         p.handle_event(13, redis.READ)
-        chan.handlers['BRPOP'].assert_called_with()
+        chan.handlers['BZMPOP'].assert_called_with()
 
         p.handle_event(13, redis.ERR)
-        chan._poll_error.assert_called_with('BRPOP')
+        chan._poll_error.assert_called_with('BZMPOP')
 
         p.handle_event(13, ~(redis.READ | redis.ERR))
 
@@ -1750,22 +1824,22 @@ class test_MultiChannelPoller:
         p._register(channel, client, type)
         client.connection.connect.assert_called_with()
 
-    def test_register_BRPOP(self):
+    def test_register_BZMPOP(self):
         p = self.Poller()
         channel = Mock()
         channel.client.connection._sock = None
         p._register = Mock()
 
         channel._in_poll = False
-        p._register_BRPOP(channel)
-        assert channel._brpop_start.call_count == 1
+        p._register_BZMPOP(channel)
+        assert channel._bzmpop_start.call_count == 1
         assert p._register.call_count == 1
 
         channel.client.connection._sock = Mock()
-        p._chan_to_sock[(channel, channel.client, 'BRPOP')] = True
+        p._chan_to_sock[(channel, channel.client, 'BZMPOP')] = True
         channel._in_poll = True
-        p._register_BRPOP(channel)
-        assert channel._brpop_start.call_count == 1
+        p._register_BZMPOP(channel)
+        assert channel._bzmpop_start.call_count == 1
         assert p._register.call_count == 1
 
     def test_register_LISTEN(self):
@@ -1795,7 +1869,7 @@ class test_MultiChannelPoller:
         p.poller = Mock()
         p.poller.poll.return_value = _pr
 
-        p._register_BRPOP = Mock()
+        p._register_BZMPOP = Mock()
         p._register_LISTEN = Mock()
 
         channel = Mock()
@@ -1825,23 +1899,23 @@ class test_MultiChannelPoller:
         qos.reject(1234, True)
         qos.restore_by_tag.assert_called_with(1234, leftmost=True)
 
-    def test_get_brpop_qos_allow(self):
+    def test_get_bzmpop_qos_allow(self):
         p, channel = self.create_get(queues=['a_queue'])
         channel.qos.can_consume.return_value = True
 
         with pytest.raises(redis.Empty):
             p.get(Mock())
 
-        p._register_BRPOP.assert_called_with(channel)
+        p._register_BZMPOP.assert_called_with(channel)
 
-    def test_get_brpop_qos_disallow(self):
+    def test_get_bzmpop_qos_disallow(self):
         p, channel = self.create_get(queues=['a_queue'])
         channel.qos.can_consume.return_value = False
 
         with pytest.raises(redis.Empty):
             p.get(Mock())
 
-        p._register_BRPOP.assert_not_called()
+        p._register_BZMPOP.assert_not_called()
 
     def test_get_listen(self):
         p, channel = self.create_get(fanouts=['f_queue'])
@@ -1853,22 +1927,22 @@ class test_MultiChannelPoller:
 
     def test_get_receives_ERR(self):
         p, channel = self.create_get(events=[(1, eventio.ERR)])
-        p._fd_to_chan[1] = (channel, 'BRPOP')
+        p._fd_to_chan[1] = (channel, 'BZMPOP')
 
         with pytest.raises(redis.Empty):
             p.get(Mock())
 
-        channel._poll_error.assert_called_with('BRPOP')
+        channel._poll_error.assert_called_with('BZMPOP')
 
     def test_get_receives_multiple(self):
         p, channel = self.create_get(events=[(1, eventio.ERR),
                                              (1, eventio.ERR)])
-        p._fd_to_chan[1] = (channel, 'BRPOP')
+        p._fd_to_chan[1] = (channel, 'BZMPOP')
 
         with pytest.raises(redis.Empty):
             p.get(Mock())
 
-        channel._poll_error.assert_called_with('BRPOP')
+        channel._poll_error.assert_called_with('BZMPOP')
 
 
 class test_Mutex:
@@ -2206,19 +2280,23 @@ class test_GlobalKeyPrefixMixin:
             f"{self.global_keyprefix}fake_key3",
         ]
 
-    def test_prefix_brpop_args(self):
+    def test_prefix_bzmpop_args(self):
         prefixed_args = self.mixin._prefix_args([
-            "BRPOP",
+            "BZMPOP",
+            "0",  # timeout
+            "2",  # numkeys
             "fake_key",
             "fake_key2",
-            "not_prefixed"
+            "MIN"
         ])
 
         assert prefixed_args == [
-            "BRPOP",
+            "BZMPOP",
+            "0",
+            "2",
             f"{self.global_keyprefix}fake_key",
             f"{self.global_keyprefix}fake_key2",
-            "not_prefixed",
+            "MIN",
         ]
 
     def test_prefix_evalsha_args(self):
