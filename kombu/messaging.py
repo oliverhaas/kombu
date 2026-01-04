@@ -847,3 +847,104 @@ class Consumer:
                 await self.acancel()
             except Exception:
                 pass
+
+    def __aiter__(self):
+        """Return async iterator for message consumption.
+
+        Note: You must call consume() or aconsume() before iterating.
+        """
+        return self
+
+    async def __anext__(self):
+        """Async iterator protocol for message consumption.
+
+        Returns the next message from the consumer queues.
+        Raises StopAsyncIteration when no more messages are available.
+        """
+        import asyncio
+
+        if not self._active_tags:
+            raise StopAsyncIteration
+
+        # Try to drain events to get the next message
+        connection = self.connection
+        if connection is None:
+            raise StopAsyncIteration
+
+        try:
+            if hasattr(connection, 'adrain_events'):
+                await connection.adrain_events(timeout=1.0)
+            else:
+                # Fallback: yield control and try again
+                await asyncio.sleep(0.01)
+        except (TimeoutError, asyncio.TimeoutError):
+            # No message available yet, but don't stop iteration
+            pass
+        except Exception:
+            raise StopAsyncIteration
+
+        # Since messages are delivered via callbacks, we can't return
+        # the message here. This is meant for event loop integration.
+        return None
+
+    async def aiterate(self, limit=None, timeout=None, ignore_timeouts=True):
+        """Async generator for consuming messages.
+
+        This is the preferred async pattern for message consumption.
+        Messages are delivered via callbacks, and this generator yields
+        control after each drain_events call.
+
+        Arguments:
+        ---------
+            limit (int): Maximum number of iterations (None for unlimited).
+            timeout (float): Timeout for each drain_events call.
+            ignore_timeouts (bool): If True, continue on timeout instead
+                of stopping iteration.
+
+        Yields:
+        ------
+            None after each successful drain_events call.
+
+        Example:
+        -------
+            async with Consumer(conn, queues, callbacks=[on_message]) as consumer:
+                async for _ in consumer.aiterate(limit=100):
+                    pass  # Messages delivered via callbacks
+        """
+        import asyncio
+        from time import monotonic
+
+        count = 0
+        start_time = monotonic() if timeout else None
+        connection = self.connection
+
+        if connection is None:
+            return
+
+        async with self:
+            while limit is None or count < limit:
+                try:
+                    remaining = None
+                    if timeout:
+                        elapsed = monotonic() - start_time
+                        if elapsed >= timeout:
+                            break
+                        remaining = timeout - elapsed
+
+                    if hasattr(connection, 'adrain_events'):
+                        await connection.adrain_events(
+                            timeout=min(remaining, 1.0) if remaining else 1.0
+                        )
+                    else:
+                        await asyncio.sleep(0.01)
+
+                    count += 1
+                    yield
+
+                except (TimeoutError, asyncio.TimeoutError):
+                    if ignore_timeouts:
+                        yield
+                    else:
+                        break
+                except Exception:
+                    break

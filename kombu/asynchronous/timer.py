@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import heapq
 import sys
 from collections import namedtuple
@@ -239,3 +240,77 @@ class Timer:
     @property
     def schedule(self):
         return self
+
+    async def aapply_entry(self, entry):
+        """Async version of apply_entry that can await coroutines.
+
+        If the entry's function is a coroutine function, it will be awaited.
+        Otherwise, it will be called synchronously.
+        """
+        try:
+            if asyncio.iscoroutinefunction(entry.fun):
+                await entry.fun(*entry.args, **entry.kwargs)
+            else:
+                entry()
+        except Exception as exc:
+            if not self.handle_error(exc):
+                logger.error('Error in timer: %r', exc, exc_info=True)
+
+    async def aprocess_timers(self, max_timers=10):
+        """Process due timers asynchronously.
+
+        This method processes up to max_timers entries that are due,
+        awaiting any coroutine functions. Returns the time until the
+        next scheduled entry, or None if there are no pending entries.
+
+        Arguments:
+        ---------
+            max_timers (int): Maximum number of timer entries to process.
+
+        Returns:
+        -------
+            float | None: Time in seconds until the next entry, or None.
+        """
+        now = monotonic()
+        processed = 0
+
+        while self._queue and processed < max_timers:
+            eta, priority, entry = self._queue[0]
+
+            if now < eta:
+                # Next entry is not due yet
+                return min(eta - now, self.max_interval)
+
+            # Pop the entry
+            heapq.heappop(self._queue)
+
+            if not entry.canceled:
+                await self.aapply_entry(entry)
+                processed += 1
+
+        return None if not self._queue else min(
+            self._queue[0][0] - monotonic(), self.max_interval
+        )
+
+    async def __aiter__(self):
+        """Async iterator over schedule.
+
+        Yields (wait_seconds, entry) tuples similar to __iter__,
+        but yields control to the asyncio event loop while waiting.
+        """
+        while True:
+            if self._queue:
+                eta, priority, entry = self._queue[0]
+                now = monotonic()
+
+                if now < eta:
+                    # Wait until the next entry is due
+                    wait_time = min(eta - now, self.max_interval)
+                    yield wait_time, None
+                else:
+                    # Pop and yield the entry
+                    heapq.heappop(self._queue)
+                    if not entry.canceled:
+                        yield None, entry
+            else:
+                yield None, None

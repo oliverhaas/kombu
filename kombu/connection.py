@@ -1041,6 +1041,40 @@ class Connection:
         """Return True if the transport supports native async/await."""
         return getattr(self.transport.implements, 'async_native', False)
 
+    @staticmethod
+    def in_async_context():
+        """Return True if currently running in an asyncio context.
+
+        This method detects whether the code is running inside an
+        asyncio event loop, which is useful for auto-switching between
+        sync and async operations.
+
+        Returns:
+            bool: True if running inside an asyncio event loop.
+        """
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+
+    def get_asyncio_hub(self):
+        """Get an AsyncioHub instance for use in async contexts.
+
+        Returns an AsyncioHub that integrates with asyncio's event loop
+        for fd and callback management. The hub is cached per connection.
+
+        Returns:
+            AsyncioHub: An asyncio-integrated hub instance.
+
+        Note:
+            This should only be called when running inside an async context.
+        """
+        if not hasattr(self, '_asyncio_hub') or self._asyncio_hub is None:
+            from kombu.asynchronous.hub import AsyncioHub
+            self._asyncio_hub = AsyncioHub()
+        return self._asyncio_hub
+
     # --- Async methods for native async support ---
 
     _async_connection = None

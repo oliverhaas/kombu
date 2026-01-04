@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import threading
 from contextlib import contextmanager
@@ -19,7 +20,7 @@ from kombu.utils.objects import cached_property
 
 from .timer import Timer
 
-__all__ = ('Hub', 'get_event_loop', 'set_event_loop')
+__all__ = ('Hub', 'AsyncioHub', 'get_event_loop', 'set_event_loop')
 logger = get_logger(__name__)
 
 _current_loop: Hub | None = None
@@ -401,3 +402,222 @@ class Hub:
         if self._loop is None:
             self._loop = self.create_loop()
         return self._loop
+
+
+class AsyncioHub(Hub):
+    """Hub implementation that delegates to asyncio event loop.
+
+    This subclass integrates with asyncio's event loop, allowing Kombu
+    to operate in async contexts while maintaining backward compatibility
+    with sync code.
+
+    When running in async mode (detected via asyncio.get_running_loop()),
+    fd registration and callback scheduling are delegated to the asyncio
+    event loop instead of using manual polling.
+    """
+
+    def __init__(self, timer=None):
+        super().__init__(timer=timer)
+        self._asyncio_loop = None
+        self._async_mode = False
+        self._asyncio_handles = {}  # Track asyncio handles for cleanup
+
+    def _get_asyncio_loop(self):
+        """Get the asyncio event loop, creating one if needed."""
+        if self._asyncio_loop is None:
+            try:
+                self._asyncio_loop = asyncio.get_running_loop()
+                self._async_mode = True
+            except RuntimeError:
+                # Not in async context, don't create a new loop
+                pass
+        return self._asyncio_loop
+
+    def _ensure_async_mode(self):
+        """Check if we're in async mode and update state."""
+        try:
+            loop = asyncio.get_running_loop()
+            if loop != self._asyncio_loop:
+                self._asyncio_loop = loop
+            self._async_mode = True
+            return True
+        except RuntimeError:
+            self._async_mode = False
+            return False
+
+    @property
+    def in_async_context(self):
+        """Return True if currently running in an async context."""
+        return self._ensure_async_mode()
+
+    def add_reader(self, fd, callback, *args):
+        """Register fd for reading.
+
+        In async mode, delegates to asyncio loop.add_reader().
+        """
+        if self._async_mode and self._asyncio_loop:
+            fd_num = fileno(fd)
+            self._asyncio_loop.add_reader(fd_num, callback, *args)
+            self.readers[fd_num] = callback, args
+        else:
+            super().add_reader(fd, callback, *args)
+
+    def add_writer(self, fd, callback, *args):
+        """Register fd for writing.
+
+        In async mode, delegates to asyncio loop.add_writer().
+        """
+        if self._async_mode and self._asyncio_loop:
+            fd_num = fileno(fd)
+            self._asyncio_loop.add_writer(fd_num, callback, *args)
+            self.writers[fd_num] = callback, args
+        else:
+            super().add_writer(fd, callback, *args)
+
+    def remove_reader(self, fd):
+        """Remove fd from reading.
+
+        In async mode, delegates to asyncio loop.remove_reader().
+        """
+        if self._async_mode and self._asyncio_loop:
+            fd_num = fileno(fd)
+            try:
+                self._asyncio_loop.remove_reader(fd_num)
+            except (ValueError, OSError):
+                pass
+            self.readers.pop(fd_num, None)
+        else:
+            super().remove_reader(fd)
+
+    def remove_writer(self, fd):
+        """Remove fd from writing.
+
+        In async mode, delegates to asyncio loop.remove_writer().
+        """
+        if self._async_mode and self._asyncio_loop:
+            fd_num = fileno(fd)
+            try:
+                self._asyncio_loop.remove_writer(fd_num)
+            except (ValueError, OSError):
+                pass
+            self.writers.pop(fd_num, None)
+        else:
+            super().remove_writer(fd)
+
+    def call_soon(self, callback, *args):
+        """Schedule callback to be called soon.
+
+        In async mode, delegates to asyncio loop.call_soon().
+        """
+        if self._async_mode and self._asyncio_loop:
+            if not isinstance(callback, Thenable):
+                callback = promise(callback, args)
+            self._asyncio_loop.call_soon(callback)
+            return callback
+        return super().call_soon(callback, *args)
+
+    def call_later(self, delay, callback, *args):
+        """Schedule callback to be called after delay seconds.
+
+        In async mode, delegates to asyncio loop.call_later().
+        """
+        if self._async_mode and self._asyncio_loop:
+            handle = self._asyncio_loop.call_later(delay, callback, *args)
+            return handle
+        return super().call_later(delay, callback, *args)
+
+    def call_at(self, when, callback, *args):
+        """Schedule callback to be called at specific time.
+
+        In async mode, delegates to asyncio loop.call_at().
+        """
+        if self._async_mode and self._asyncio_loop:
+            handle = self._asyncio_loop.call_at(when, callback, *args)
+            return handle
+        return super().call_at(when, callback, *args)
+
+    async def arun_once(self):
+        """Async version of run_once - yields control to asyncio."""
+        # Ensure we're in async mode
+        self._ensure_async_mode()
+
+        # Process ready callbacks
+        ready = self._pop_ready()
+        for item in ready:
+            if item:
+                if asyncio.iscoroutinefunction(item):
+                    await item()
+                else:
+                    item()
+
+        # Fire timers
+        if self.timer and self.timer._queue:
+            self.fire_timers()
+
+        # Yield control to asyncio event loop
+        await asyncio.sleep(0)
+
+    async def arun_forever(self):
+        """Async event loop - runs until stop() is called."""
+        self._running = True
+        self._ensure_async_mode()
+        try:
+            while self._running:
+                try:
+                    await self.arun_once()
+                except Stop:
+                    break
+        finally:
+            self._running = False
+
+    async def afire_timers(self, min_delay=1, max_delay=10, max_timers=10):
+        """Async version of fire_timers that can await coroutines."""
+        timer = self.timer
+        delay = None
+        if timer and timer._queue:
+            for _ in range(max_timers):
+                delay, entry = next(self.scheduler)
+                if entry is None:
+                    break
+                try:
+                    if asyncio.iscoroutinefunction(entry.fun):
+                        await entry.fun(*entry.args, **entry.kwargs)
+                    else:
+                        entry()
+                except (MemoryError, AssertionError):
+                    raise
+                except OSError as exc:
+                    if exc.errno == errno.ENOMEM:
+                        raise
+                    logger.error('Error in timer: %r', exc, exc_info=1)
+                except Exception as exc:
+                    logger.error('Error in timer: %r', exc, exc_info=1)
+        return min(delay or min_delay, max_delay)
+
+    def close(self, *args):
+        """Close the hub, cleaning up asyncio resources."""
+        # Clean up asyncio readers/writers if in async mode
+        if self._async_mode and self._asyncio_loop:
+            for fd in list(self.readers.keys()):
+                try:
+                    self._asyncio_loop.remove_reader(fd)
+                except (ValueError, OSError):
+                    pass
+            for fd in list(self.writers.keys()):
+                try:
+                    self._asyncio_loop.remove_writer(fd)
+                except (ValueError, OSError):
+                    pass
+
+        # Reset async state
+        self._asyncio_loop = None
+        self._async_mode = False
+
+        # Call parent close
+        super().close(*args)
+
+    def __repr__(self):
+        mode = 'async' if self._async_mode else 'sync'
+        return '<AsyncioHub@{:#x}: R:{} W:{} mode:{}>'.format(
+            id(self), len(self.readers), len(self.writers), mode,
+        )

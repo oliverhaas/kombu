@@ -1598,13 +1598,36 @@ class Transport(virtual.Transport):
         """Async drain events from all channels.
 
         This is the async version of drain_events, using asyncio.wait_for
-        for timeout handling.
+        for timeout handling. It integrates with asyncio's event loop
+        for non-blocking I/O.
+
+        Arguments:
+            connection: The connection to drain events from.
+            timeout (float): Maximum time to wait for events.
+
+        Raises:
+            asyncio.TimeoutError: If timeout expires before an event.
         """
-        from time import monotonic
-        time_start = monotonic()
+        if timeout is not None:
+            try:
+                return await asyncio.wait_for(
+                    self._adrain_events_impl(connection),
+                    timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                raise
+        return await self._adrain_events_impl(connection)
+
+    async def _adrain_events_impl(self, connection):
+        """Implementation of async drain events.
+
+        Polls channels for messages and delivers them via callbacks.
+        Yields control to asyncio between polls.
+        """
+        poll_interval = 0.01  # 10ms between polls for responsiveness
 
         while True:
-            # Get the first channel with queued messages
+            # Check each channel for queued messages
             for channel in self.channels:
                 if channel._queue_cycle is not None:
                     queues = channel._queue_cycle.consume(1)
@@ -1613,20 +1636,13 @@ class Transport(virtual.Transport):
                         try:
                             message = await channel._aget(queue)
                             if message:
-                                # Use the transport's _deliver method
+                                # Deliver the message via callback
                                 return self._deliver(message, queue)
                         except Empty:
                             pass
 
-            # Check if timeout reached
-            if timeout is not None:
-                elapsed = monotonic() - time_start
-                if elapsed >= timeout:
-                    raise asyncio.TimeoutError()
-                remaining = timeout - elapsed
-                await asyncio.sleep(min(remaining, 0.1))
-            else:
-                await asyncio.sleep(0.1)
+            # Yield control to asyncio event loop
+            await asyncio.sleep(poll_interval)
 
 
 if sentinel:

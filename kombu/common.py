@@ -21,7 +21,7 @@ from .utils.uuid import uuid
 
 __all__ = ('Broadcast', 'maybe_declare', 'amaybe_declare', 'uuid',
            'itermessages', 'send_reply',
-           'collect_replies', 'insured', 'drain_consumer',
+           'collect_replies', 'insured', 'drain_consumer', 'adrain_consumer',
            'eventloop', 'aeventloop')
 
 #: Prefetch count can't exceed short.
@@ -219,21 +219,87 @@ async def _amaybe_declare(entity, channel):
 async def aeventloop(conn, limit=None, timeout=None, ignore_timeouts=False):
     """Async eventloop generator around ``Connection.adrain_events``.
 
-    This is the async version of :func:`eventloop`.
+    This is the async version of :func:`eventloop`. It integrates with
+    asyncio's event loop for non-blocking event processing.
 
     Able to drain events forever, with a limit, and optionally ignoring
-    timeout errors.
+    timeout errors. Uses native asyncio timeout handling.
+
+    Arguments:
+        conn: The connection to drain events from.
+        limit (int): Maximum number of iterations. None for unlimited.
+        timeout (float): Timeout per drain_events call.
+        ignore_timeouts (bool): If True, continue on timeout.
+
+    Yields:
+        Result of each drain_events call.
 
     Examples:
         >>> async for _ in aeventloop(conn, timeout=1, ignore_timeouts=True):
         ...     pass  # loop forever
+
+        >>> async for _ in aeventloop(conn, limit=100, timeout=5):
+        ...     pass  # process up to 100 events
     """
-    for i in limit and range(limit) or count():
+    from time import monotonic
+
+    count_iter = 0
+    start_time = monotonic() if timeout else None
+
+    while limit is None or count_iter < limit:
         try:
-            yield await conn.adrain_events(timeout=timeout)
+            # Calculate remaining time if overall timeout
+            remaining_timeout = timeout
+            if timeout and start_time:
+                elapsed = monotonic() - start_time
+                remaining_timeout = max(0, timeout - elapsed)
+                if remaining_timeout <= 0 and not ignore_timeouts:
+                    return
+
+            result = await conn.adrain_events(timeout=remaining_timeout)
+            count_iter += 1
+            yield result
         except asyncio.TimeoutError:
-            if timeout and not ignore_timeouts:
+            if not ignore_timeouts:
                 raise
+            # On timeout with ignore, yield None and continue
+            count_iter += 1
+            yield None
+
+
+async def adrain_consumer(consumer, limit=1, timeout=None, callbacks=None):
+    """Async drain messages from consumer instance.
+
+    This is the async version of :func:`drain_consumer`. It uses
+    native asyncio patterns for message consumption.
+
+    Arguments:
+        consumer: The consumer instance to drain.
+        limit (int): Maximum number of messages to drain.
+        timeout (float): Timeout for each drain operation.
+        callbacks (list): Additional callbacks to register.
+
+    Yields:
+        Tuples of (body, message) for each received message.
+    """
+    acc = deque()
+
+    def on_message(body, message):
+        acc.append((body, message))
+
+    consumer.callbacks = [on_message] + (callbacks or [])
+
+    async with consumer:
+        async for _ in aeventloop(
+            consumer.channel.connection.client,
+            limit=limit,
+            timeout=timeout,
+            ignore_timeouts=True
+        ):
+            try:
+                yield acc.popleft()
+            except IndexError:
+                pass
 
 
 def drain_consumer(consumer, limit=1, timeout=None, callbacks=None):
