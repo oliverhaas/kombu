@@ -4,12 +4,7 @@ from __future__ import annotations
 
 from socket import timeout as TimeoutError
 from types import TracebackType
-from typing import TYPE_CHECKING, TypeVar
-
-from amqp import ChannelError, ConnectionError, ResourceError
-
-if TYPE_CHECKING:
-    from kombu.asynchronous.http import Response
+from typing import TypeVar
 
 __all__ = (
     'reraise', 'KombuError', 'OperationalError',
@@ -17,8 +12,8 @@ __all__ = (
     'LimitExceeded', 'ConnectionLimitExceeded',
     'ChannelLimitExceeded', 'ConnectionError', 'ChannelError',
     'VersionMismatch', 'SerializerNotInstalled', 'ResourceError',
-    'SerializationError', 'EncodeError', 'DecodeError', 'HttpError',
-    'InconsistencyError',
+    'SerializationError', 'EncodeError', 'DecodeError',
+    'InconsistencyError', 'ContentDisallowed', 'HttpError',
 )
 
 BaseExceptionType = TypeVar('BaseExceptionType', bound=BaseException)
@@ -87,6 +82,18 @@ class ContentDisallowed(SerializerNotInstalled):
     """Consumer does not allow this content-type."""
 
 
+class ConnectionError(KombuError):
+    """Connection error."""
+
+
+class ChannelError(KombuError):
+    """Channel error."""
+
+
+class ResourceError(KombuError):
+    """Resource error."""
+
+
 class InconsistencyError(ConnectionError):
     """Data or environment has been found to be inconsistent.
 
@@ -97,16 +104,11 @@ class InconsistencyError(ConnectionError):
 class HttpError(Exception):
     """HTTP Client Error."""
 
-    def __init__(
-        self,
-        code: int,
-        message: str | None = None,
-        response: Response | None = None
-    ) -> None:
+    def __init__(self, code: int, message: str = '', response: object = None):
         self.code = code
         self.message = message
         self.response = response
         super().__init__(code, message, response)
 
     def __str__(self) -> str:
-        return 'HTTP {0.code}: {0.message}'.format(self)
+        return f'HTTP {self.code}: {self.message}'

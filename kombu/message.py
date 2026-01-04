@@ -1,13 +1,16 @@
-"""Message class."""
+"""Message class for pure asyncio Kombu."""
 
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING, Any, Callable
 
 from .compression import decompress
 from .exceptions import MessageStateError, reraise
 from .serialization import loads
-from .utils.functional import dictfilter
+
+if TYPE_CHECKING:
+    from .transport.redis import Channel
 
 __all__ = ('Message',)
 
@@ -19,37 +22,21 @@ class Message:
     """Base class for received messages.
 
     Keyword Arguments:
-    -----------------
-        channel (ChannelT): If message was received, this should be the
-            channel that the message was received on.
-
-        body (str): Message body.
-
-        delivery_mode (bool): Set custom delivery mode.
-            Defaults to :attr:`delivery_mode`.
-
-        priority (int): Message priority, 0 to broker configured
-            max priority, where higher is better.
-
-        content_type (str): The messages content_type.  If content_type
-            is set, no serialization occurs as it is assumed this is either
-            a binary object, or you've done your own serialization.
-            Leave blank if using built-in serialization as our library
-            properly sets content_type.
-
-        content_encoding (str): The character set in which this object
-            is encoded. Use "binary" if sending in raw binary objects.
-            Leave blank if using built-in serialization as our library
-            properly sets content_encoding.
-
-        properties (Dict): Message properties.
-
-        headers (Dict): Message headers.
+        channel: The channel that the message was received on.
+        body: Message body.
+        delivery_mode: Delivery mode (transient or persistent).
+        priority: Message priority.
+        content_type: The message content type.
+        content_encoding: The message encoding.
+        properties: Message properties.
+        headers: Message headers.
+        delivery_tag: Unique message identifier for acknowledgment.
+        delivery_info: Delivery metadata (exchange, routing_key, etc.).
     """
 
     MessageStateError = MessageStateError
 
-    errors = None
+    errors: list | None = None
 
     if not IS_PYPY:  # pragma: no cover
         __slots__ = (
@@ -59,10 +46,20 @@ class Message:
             'body', '_decoded_cache', 'accept', '__dict__',
         )
 
-    def __init__(self, body=None, delivery_tag=None,
-                 content_type=None, content_encoding=None, delivery_info=None,
-                 properties=None, headers=None, postencode=None,
-                 accept=None, channel=None, **kwargs):
+    def __init__(
+        self,
+        body: bytes | str | None = None,
+        delivery_tag: str | None = None,
+        content_type: str | None = None,
+        content_encoding: str | None = None,
+        delivery_info: dict | None = None,
+        properties: dict | None = None,
+        headers: dict | None = None,
+        postencode: str | None = None,
+        accept: set[str] | None = None,
+        channel: Channel | None = None,
+        **kwargs: Any,
+    ):
         delivery_info = {} if not delivery_info else delivery_info
         self.errors = [] if self.errors is None else self.errors
         self.channel = channel
@@ -90,7 +87,7 @@ class Message:
                 self.errors.append(sys.exc_info())
         self.body = body
 
-    def _reraise_error(self, callback=None):
+    def _reraise_error(self, callback: Callable | None = None) -> None:
         try:
             reraise(*self.errors[0])
         except Exception as exc:
@@ -98,13 +95,12 @@ class Message:
                 raise
             callback(self, exc)
 
-    def ack(self, multiple=False):
+    async def ack(self, multiple: bool = False) -> None:
         """Acknowledge this message as being processed.
 
         This will remove the message from the queue.
 
-        Raises
-        ------
+        Raises:
             MessageStateError: If the message has already been
                 acknowledged/requeued/rejected.
         """
@@ -121,36 +117,50 @@ class Message:
                     return
         if self.acknowledged:
             raise self.MessageStateError(
-                'Message already acknowledged with state: {0._state}'.format(
-                    self))
-        self.channel.basic_ack(self.delivery_tag, multiple=multiple)
+                f'Message already acknowledged with state: {self._state}')
+        await self.channel.basic_ack(self.delivery_tag, multiple=multiple)
         self._state = 'ACK'
 
-    def ack_log_error(self, logger, errors, multiple=False):
+    async def ack_log_error(
+        self,
+        logger: Any,
+        errors: tuple[type[Exception], ...],
+        multiple: bool = False,
+    ) -> None:
         try:
-            self.ack(multiple=multiple)
+            await self.ack(multiple=multiple)
         except BrokenPipeError as exc:
-            logger.critical("Couldn't ack %r, reason:%r",
-                            self.delivery_tag, exc, exc_info=True)
+            logger.critical(
+                "Couldn't ack %r, reason:%r",
+                self.delivery_tag, exc, exc_info=True,
+            )
             raise
         except errors as exc:
-            logger.critical("Couldn't ack %r, reason:%r",
-                            self.delivery_tag, exc, exc_info=True)
+            logger.critical(
+                "Couldn't ack %r, reason:%r",
+                self.delivery_tag, exc, exc_info=True,
+            )
 
-    def reject_log_error(self, logger, errors, requeue=False):
+    async def reject_log_error(
+        self,
+        logger: Any,
+        errors: tuple[type[Exception], ...],
+        requeue: bool = False,
+    ) -> None:
         try:
-            self.reject(requeue=requeue)
+            await self.reject(requeue=requeue)
         except errors as exc:
-            logger.critical("Couldn't reject %r, reason: %r",
-                            self.delivery_tag, exc, exc_info=True)
+            logger.critical(
+                "Couldn't reject %r, reason: %r",
+                self.delivery_tag, exc, exc_info=True,
+            )
 
-    def reject(self, requeue=False):
+    async def reject(self, requeue: bool = False) -> None:
         """Reject this message.
 
         The message will be discarded by the server.
 
-        Raises
-        ------
+        Raises:
             MessageStateError: If the message has already been
                 acknowledged/requeued/rejected.
         """
@@ -159,21 +169,18 @@ class Message:
                 'This message does not have a receiving channel')
         if self.acknowledged:
             raise self.MessageStateError(
-                'Message already acknowledged with state: {0._state}'.format(
-                    self))
-        self.channel.basic_reject(self.delivery_tag, requeue=requeue)
+                f'Message already acknowledged with state: {self._state}')
+        await self.channel.basic_reject(self.delivery_tag, requeue=requeue)
         self._state = 'REJECTED'
 
-    def requeue(self):
+    async def requeue(self) -> None:
         """Reject this message and put it back on the queue.
 
         Warning:
-        -------
             You must not use this method as a means of selecting messages
             to process.
 
-        Raises
-        ------
+        Raises:
             MessageStateError: If the message has already been
                 acknowledged/requeued/rejected.
         """
@@ -182,18 +189,16 @@ class Message:
                 'This message does not have a receiving channel')
         if self.acknowledged:
             raise self.MessageStateError(
-                'Message already acknowledged with state: {0._state}'.format(
-                    self))
-        self.channel.basic_reject(self.delivery_tag, requeue=True)
+                f'Message already acknowledged with state: {self._state}')
+        await self.channel.basic_reject(self.delivery_tag, requeue=True)
         self._state = 'REQUEUED'
 
-    def decode(self):
+    def decode(self) -> Any:
         """Deserialize the message body.
 
-        Returning the original python structure sent by the publisher.
+        Returns the original python structure sent by the publisher.
 
         Note:
-        ----
             The return value is memoized, use `_decode` to force
             re-evaluation.
         """
@@ -201,34 +206,28 @@ class Message:
             self._decoded_cache = self._decode()
         return self._decoded_cache
 
-    def _decode(self):
-        return loads(self.body, self.content_type,
-                     self.content_encoding, accept=self.accept)
+    def _decode(self) -> Any:
+        return loads(
+            self.body,
+            self.content_type,
+            self.content_encoding,
+            accept=self.accept,
+        )
 
     @property
-    def acknowledged(self):
-        """Set to true if the message has been acknowledged."""
+    def acknowledged(self) -> bool:
+        """True if the message has been acknowledged."""
         return self._state in ACK_STATES
 
     @property
-    def payload(self):
+    def payload(self) -> Any:
         """The decoded message body."""
         return self._decoded_cache if self._decoded_cache else self.decode()
 
-    def __repr__(self):
-        return '<{} object at {:#x} with details {!r}>'.format(
-            type(self).__name__, id(self), dictfilter(
-                state=self._state,
-                content_type=self.content_type,
-                delivery_tag=self.delivery_tag,
-                body_length=len(self.body) if self.body is not None else None,
-                properties=dictfilter(
-                    correlation_id=self.properties.get('correlation_id'),
-                    type=self.properties.get('type'),
-                ),
-                delivery_info=dictfilter(
-                    exchange=self.delivery_info.get('exchange'),
-                    routing_key=self.delivery_info.get('routing_key'),
-                ),
-            ),
+    def __repr__(self) -> str:
+        body_len = len(self.body) if self.body is not None else None
+        return (
+            f'<{type(self).__name__} object at {id(self):#x} '
+            f'state={self._state!r} content_type={self.content_type!r} '
+            f'delivery_tag={self.delivery_tag!r} body_length={body_len}>'
         )

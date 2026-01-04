@@ -1,163 +1,305 @@
-"""Simple messaging interface."""
+"""Simple messaging interface - Pure asyncio implementation."""
 
 from __future__ import annotations
 
-import socket
+import asyncio
 from collections import deque
 from queue import Empty
-from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from . import entity, messaging
-from .connection import maybe_channel
+from .entity import Exchange, Queue
 
 if TYPE_CHECKING:
-    from types import TracebackType
+    from .connection import Connection
+    from .message import Message
+    from .transport.redis import Channel
 
 __all__ = ('SimpleQueue', 'SimpleBuffer')
 
 
-class SimpleBase:
+class SimpleQueue:
+    """Simple API for persistent queues - Pure asyncio implementation.
+
+    Provides a simplified interface for point-to-point messaging
+    using put/get operations similar to Python's Queue.
+
+    Example:
+        async with connection.SimpleQueue('my_queue') as queue:
+            await queue.put({'hello': 'world'})
+            message = await queue.get(timeout=5)
+            await message.ack()
+
+    Arguments:
+        connection: The connection to use.
+        name: Queue name (also used as exchange and routing key).
+        no_ack: Don't require message acknowledgment.
+        queue_opts: Options passed to Queue declaration.
+        exchange_opts: Options passed to Exchange declaration.
+        serializer: Default serializer for messages.
+        compression: Default compression for messages.
+        accept: List of accepted content types for consuming.
+    """
+
     Empty = Empty
-    _consuming = False
+    no_ack: bool = False
+    queue_opts: dict = {}
+    exchange_opts: dict = {'type': 'direct'}
 
-    def __enter__(self):
-        return self
-
-    def __exit__(
+    def __init__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None
+        connection: Connection,
+        name: str | Queue,
+        no_ack: bool | None = None,
+        queue_opts: dict | None = None,
+        exchange_opts: dict | None = None,
+        serializer: str | None = None,
+        compression: str | None = None,
+        accept: list[str] | None = None,
+        channel: Channel | None = None,
+        **kwargs: Any,
+    ):
+        self._connection = connection
+        self._channel = channel
+        self._buffer: deque[Message] = deque()
+        self._consuming = False
+        self._consumer_tag: str | None = None
+
+        if no_ack is None:
+            no_ack = self.no_ack
+        self._no_ack = no_ack
+
+        _queue_opts = dict(self.queue_opts, **(queue_opts or {}))
+        _exchange_opts = dict(self.exchange_opts, **(exchange_opts or {}))
+
+        if isinstance(name, Queue):
+            self._queue = name
+            self._exchange = name.exchange
+            self._routing_key = name.routing_key
+        else:
+            self._exchange = Exchange(name, **_exchange_opts)
+            self._queue = Queue(
+                name,
+                exchange=self._exchange,
+                routing_key=name,
+                **_queue_opts,
+            )
+            self._routing_key = name
+
+        self._serializer = serializer
+        self._compression = compression
+        self._accept = set(accept) if accept else None
+        self._declared = False
+
+    async def _ensure_channel(self) -> Channel:
+        """Ensure we have a channel."""
+        if self._channel is None:
+            self._channel = await self._connection.default_channel()
+        return self._channel
+
+    async def _declare(self) -> None:
+        """Declare exchange and queue."""
+        if self._declared:
+            return
+
+        channel = await self._ensure_channel()
+
+        if self._exchange:
+            await self._exchange.declare(channel)
+
+        await self._queue.declare(channel)
+
+        if self._exchange:
+            await self._queue.bind(channel)
+
+        self._declared = True
+
+    async def _consume(self) -> None:
+        """Start consuming if not already."""
+        if self._consuming:
+            return
+
+        await self._declare()
+        channel = await self._ensure_channel()
+
+        self._consumer_tag = await channel.basic_consume(
+            queue=self._queue.name,
+            callback=self._receive,
+            no_ack=self._no_ack,
+        )
+        self._consuming = True
+
+    def _receive(self, body: Any, message: Message) -> None:
+        """Callback for received messages."""
+        self._buffer.append(message)
+
+    async def put(
+        self,
+        message: Any,
+        serializer: str | None = None,
+        headers: dict | None = None,
+        compression: str | None = None,
+        routing_key: str | None = None,
+        **kwargs: Any,
     ) -> None:
-        self.close()
+        """Put a message on the queue.
 
-    def __init__(self, channel, producer, consumer, no_ack=False):
-        self.channel = maybe_channel(channel)
-        self.producer = producer
-        self.consumer = consumer
-        self.no_ack = no_ack
-        self.queue = self.consumer.queues[0]
-        self.buffer = deque()
-        self.consumer.register_callback(self._receive)
+        Args:
+            message: Message body (will be serialized).
+            serializer: Serializer to use.
+            headers: Optional message headers.
+            compression: Compression method.
+            routing_key: Override routing key.
+            **kwargs: Additional message properties.
+        """
+        await self._declare()
 
-    def get(self, block=True, timeout=None):
+        from .messaging import Producer
+        producer = Producer(
+            self._connection,
+            channel=self._channel,
+            exchange=self._exchange,
+            routing_key=routing_key or self._routing_key,
+            serializer=serializer or self._serializer,
+            compression=compression or self._compression,
+        )
+
+        await producer.publish(
+            body=message,
+            headers=headers,
+            **kwargs,
+        )
+
+    async def get(
+        self,
+        block: bool = True,
+        timeout: float | None = None,
+    ) -> Message:
+        """Get a message from the queue.
+
+        Args:
+            block: If True, block until a message is available.
+            timeout: Maximum time to wait in seconds.
+
+        Returns:
+            The message object.
+
+        Raises:
+            Empty: If no message is available and block is False or timeout expired.
+        """
         if not block:
-            return self.get_nowait()
+            return await self.get_nowait()
 
-        self._consume()
+        await self._consume()
 
-        time_start = monotonic()
+        start_time = asyncio.get_event_loop().time()
         remaining = timeout
+
         while True:
-            if self.buffer:
-                return self.buffer.popleft()
+            if self._buffer:
+                return self._buffer.popleft()
 
             if remaining is not None and remaining <= 0.0:
                 raise self.Empty()
 
             try:
-                # The `drain_events` method will
-                # block on the socket connection to rabbitmq. if any
-                # application-level messages are received, it will put them
-                # into `self.buffer`.
-                # * The method will block for UP TO `timeout` milliseconds.
-                # * The method may raise a socket.timeout exception; or...
-                # * The method may return without having put anything on
-                #    `self.buffer`.  This is because internal heartbeat
-                #    messages are sent over the same socket; also POSIX makes
-                #    no guarantees against socket calls returning early.
-                self.channel.connection.client.drain_events(timeout=remaining)
-            except socket.timeout:
-                raise self.Empty()
+                channel = await self._ensure_channel()
+                delivered = await channel.drain_events(timeout=min(remaining or 1.0, 1.0))
+                if delivered and self._buffer:
+                    return self._buffer.popleft()
+            except Exception:
+                pass
 
             if remaining is not None:
-                elapsed = monotonic() - time_start
+                elapsed = asyncio.get_event_loop().time() - start_time
                 remaining = timeout - elapsed
 
-    def get_nowait(self):
-        m = self.queue.get(no_ack=self.no_ack, accept=self.consumer.accept)
-        if not m:
+    async def get_nowait(self) -> Message:
+        """Get a message without blocking.
+
+        Returns:
+            The message object.
+
+        Raises:
+            Empty: If no message is available.
+        """
+        await self._declare()
+
+        # First check buffer
+        if self._buffer:
+            return self._buffer.popleft()
+
+        # Try to get directly from queue
+        channel = await self._ensure_channel()
+        message = await channel.get(
+            self._queue.name,
+            no_ack=self._no_ack,
+            accept=self._accept,
+        )
+
+        if message is None:
             raise self.Empty()
-        return m
 
-    def put(self, message, serializer=None, headers=None, compression=None,
-            routing_key=None, **kwargs):
-        self.producer.publish(message,
-                              serializer=serializer,
-                              routing_key=routing_key,
-                              headers=headers,
-                              compression=compression,
-                              **kwargs)
+        return message
 
-    def clear(self):
-        return self.consumer.purge()
+    async def clear(self) -> int:
+        """Purge all messages from the queue.
 
-    def qsize(self):
-        _, size, _ = self.queue.queue_declare(passive=True)
-        return size
+        Returns:
+            Number of messages purged.
+        """
+        await self._declare()
+        channel = await self._ensure_channel()
+        return await channel.queue_purge(self._queue.name)
 
-    def close(self):
-        self.consumer.cancel()
+    async def qsize(self) -> int:
+        """Get the approximate number of messages in the queue.
 
-    def _receive(self, message_data, message):
-        self.buffer.append(message)
+        Returns:
+            Number of messages.
+        """
+        channel = await self._ensure_channel()
+        return await channel.client.llen(self._queue.name)
 
-    def _consume(self):
-        if not self._consuming:
-            self.consumer.consume(no_ack=self.no_ack)
-            self._consuming = True
+    async def close(self) -> None:
+        """Close the simple queue."""
+        if self._consumer_tag and self._channel:
+            await self._channel.basic_cancel(self._consumer_tag)
+            self._consumer_tag = None
+        self._consuming = False
+        self._buffer.clear()
 
-    def __len__(self):
-        """`len(self) -> self.qsize()`."""
-        return self.qsize()
+    async def __aenter__(self) -> SimpleQueue:
+        """Async context manager entry."""
+        await self._declare()
+        return self
 
-    def __bool__(self):
-        return True
-    __nonzero__ = __bool__
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Async context manager exit."""
+        await self.close()
 
-
-class SimpleQueue(SimpleBase):
-    """Simple API for persistent queues."""
-
-    no_ack = False
-    queue_opts = {}
-    queue_args = {}
-    exchange_opts = {'type': 'direct'}
-
-    def __init__(self, channel, name, no_ack=None, queue_opts=None,
-                 queue_args=None, exchange_opts=None, serializer=None,
-                 compression=None, accept=None):
-        queue = name
-        queue_opts = dict(self.queue_opts, **queue_opts or {})
-        queue_args = dict(self.queue_args, **queue_args or {})
-        exchange_opts = dict(self.exchange_opts, **exchange_opts or {})
-        if no_ack is None:
-            no_ack = self.no_ack
-        if not isinstance(queue, entity.Queue):
-            exchange = entity.Exchange(name, **exchange_opts)
-            queue = entity.Queue(name, exchange, name,
-                                 queue_arguments=queue_args,
-                                 **queue_opts)
-            routing_key = name
-        else:
-            exchange = queue.exchange
-            routing_key = queue.routing_key
-        consumer = messaging.Consumer(channel, queue, accept=accept)
-        producer = messaging.Producer(channel, exchange,
-                                      serializer=serializer,
-                                      routing_key=routing_key,
-                                      compression=compression)
-        super().__init__(channel, producer,
-                         consumer, no_ack)
+    def __repr__(self) -> str:
+        return f'<SimpleQueue: {self._queue.name}>'
 
 
 class SimpleBuffer(SimpleQueue):
-    """Simple API for ephemeral queues."""
+    """Simple API for ephemeral queues - Pure asyncio implementation.
 
-    no_ack = True
-    queue_opts = {'durable': False,
-                  'auto_delete': True}
-    exchange_opts = {'durable': False,
-                     'delivery_mode': 'transient',
-                     'auto_delete': True}
+    Like SimpleQueue but with transient, auto-delete settings.
+    Suitable for temporary communication channels.
+    """
+
+    no_ack: bool = True
+    queue_opts: dict = {
+        'durable': False,
+        'auto_delete': True,
+    }
+    exchange_opts: dict = {
+        'type': 'direct',
+        'durable': False,
+        'auto_delete': True,
+    }
