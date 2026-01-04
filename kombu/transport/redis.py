@@ -54,12 +54,13 @@ Transport Options
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import numbers
 import socket
 from bisect import bisect
 from collections import namedtuple
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from importlib.metadata import version
 from queue import Empty
 from time import time
@@ -87,6 +88,13 @@ try:
 except ImportError:  # pragma: no cover
     redis = None
     _REDIS_GET_CONNECTION_WITHOUT_ARGS = None
+
+try:
+    import redis.asyncio as aioredis
+    HAS_ASYNC_REDIS = True
+except ImportError:  # pragma: no cover
+    aioredis = None
+    HAS_ASYNC_REDIS = False
 
 try:
     from redis import CredentialProvider, sentinel
@@ -349,6 +357,56 @@ class PrefixedRedisPubSub(redis.client.PubSub):
 
     def execute_command(self, *args, **kwargs):
         return super().execute_command(*self._prefix_args(args), **kwargs)
+
+
+# Async Redis classes for native async support
+if HAS_ASYNC_REDIS:
+    class AsyncGlobalKeyPrefixMixin:
+        """Async mixin to provide common logic for global key prefixing."""
+
+        PREFIXED_SIMPLE_COMMANDS = GlobalKeyPrefixMixin.PREFIXED_SIMPLE_COMMANDS
+        PREFIXED_COMPLEX_COMMANDS = GlobalKeyPrefixMixin.PREFIXED_COMPLEX_COMMANDS
+
+        def _prefix_args(self, args):
+            args = list(args)
+            command = args.pop(0)
+
+            if command in self.PREFIXED_SIMPLE_COMMANDS:
+                args[0] = self.global_keyprefix + str(args[0])
+            elif command in self.PREFIXED_COMPLEX_COMMANDS:
+                args_start = self.PREFIXED_COMPLEX_COMMANDS[command]["args_start"]
+                args_end = self.PREFIXED_COMPLEX_COMMANDS[command]["args_end"]
+
+                pre_args = args[:args_start] if args_start > 0 else []
+                post_args = []
+
+                if args_end is not None:
+                    post_args = args[args_end:]
+
+                args = pre_args + [
+                    self.global_keyprefix + str(arg)
+                    for arg in args[args_start:args_end]
+                ] + post_args
+
+            return [command, *args]
+
+        def parse_response(self, connection, command_name, **options):
+            ret = super().parse_response(connection, command_name, **options)
+            if command_name == 'BRPOP' and ret:
+                key, value = ret
+                key = key[len(self.global_keyprefix):]
+                return key, value
+            return ret
+
+        def execute_command(self, *args, **kwargs):
+            return super().execute_command(*self._prefix_args(args), **kwargs)
+
+    class AsyncPrefixedRedis(AsyncGlobalKeyPrefixMixin, aioredis.Redis):
+        """Async Redis client with key prefixing support."""
+
+        def __init__(self, *args, **kwargs):
+            self.global_keyprefix = kwargs.pop('global_keyprefix', '')
+            aioredis.Redis.__init__(self, *args, **kwargs)
 
 
 class QoS(virtual.QoS):
@@ -1321,6 +1379,124 @@ class Channel(virtual.Channel):
         return {queue for queue in self._active_queues
                 if queue not in self.active_fanout_queues}
 
+    # --- Async methods for native async support ---
+
+    _async_client_instance = None
+    _async_pool_instance = None
+
+    def _get_async_client(self):
+        """Get or create async Redis client."""
+        if not HAS_ASYNC_REDIS:
+            raise NotImplementedError(
+                'Async Redis requires redis-py with async support. '
+                'Install with: pip install redis>=4.2.0'
+            )
+        if self._async_client_instance is None:
+            self._async_client_instance = self._create_async_client()
+        return self._async_client_instance
+
+    def _create_async_client(self):
+        """Create an async Redis client."""
+        connparams = self._async_connparams()
+        pool = aioredis.ConnectionPool(**connparams)
+        self._async_pool_instance = pool
+        if self.global_keyprefix:
+            return AsyncPrefixedRedis(
+                connection_pool=pool,
+                global_keyprefix=self.global_keyprefix,
+            )
+        return aioredis.Redis(connection_pool=pool)
+
+    def _async_connparams(self):
+        """Get connection parameters for async Redis client."""
+        conninfo = self.connection.client
+        connparams = {
+            'host': conninfo.hostname or '127.0.0.1',
+            'port': conninfo.port or self.connection.default_port,
+            'db': self._prepare_virtual_host(conninfo.virtual_host),
+            'username': conninfo.userid,
+            'password': conninfo.password,
+            'socket_timeout': self.socket_timeout,
+            'socket_connect_timeout': self.socket_connect_timeout,
+            'retry_on_timeout': self.retry_on_timeout,
+        }
+
+        # Handle SSL
+        if conninfo.ssl:
+            try:
+                connparams.update(conninfo.ssl)
+            except TypeError:
+                pass
+
+        # Remove None values
+        return {k: v for k, v in connparams.items() if v is not None}
+
+    @asynccontextmanager
+    async def aconn_or_acquire(self, client=None):
+        """Async context manager for acquiring a Redis client."""
+        if client:
+            yield client
+        else:
+            yield self._get_async_client()
+
+    async def _aget(self, queue):
+        """Async get message from queue."""
+        async with self.aconn_or_acquire() as client:
+            for pri in self.priority_steps:
+                item = await client.rpop(self._q_for_pri(queue, pri))
+                if item:
+                    return loads(bytes_to_str(item))
+            raise Empty()
+
+    async def _aput(self, queue, message, **kwargs):
+        """Async deliver message to queue."""
+        pri = self._get_message_priority(message, reverse=False)
+        async with self.aconn_or_acquire() as client:
+            await client.lpush(self._q_for_pri(queue, pri), dumps(message))
+
+    async def _aput_fanout(self, exchange, message, routing_key, **kwargs):
+        """Async deliver fanout message."""
+        async with self.aconn_or_acquire() as client:
+            await client.publish(
+                self._get_publish_topic(exchange, routing_key),
+                dumps(message),
+            )
+
+    async def _asize(self, queue):
+        """Async get queue size."""
+        async with self.aconn_or_acquire() as client:
+            async with client.pipeline() as pipe:
+                for pri in self.priority_steps:
+                    pipe.llen(self._q_for_pri(queue, pri))
+                sizes = await pipe.execute()
+                return sum(size for size in sizes
+                           if isinstance(size, numbers.Integral))
+
+    async def abasic_publish(self, message, exchange, routing_key, **kwargs):
+        """Async publish message to exchange."""
+        self._inplace_augment_message(message, exchange, routing_key)
+        if exchange:
+            # Route through exchange
+            exchange_type = self.typeof(exchange)
+            if exchange_type.type == 'fanout':
+                await self._aput_fanout(exchange, message, routing_key, **kwargs)
+            else:
+                # Direct/topic exchange - find bound queues
+                for queue in self._lookup(exchange, routing_key):
+                    await self._aput(queue, message, **kwargs)
+        else:
+            # No exchange, routing_key is queue name
+            await self._aput(routing_key, message, **kwargs)
+
+    async def aclose(self):
+        """Async close the channel."""
+        if self._async_client_instance is not None:
+            await self._async_client_instance.aclose()
+            self._async_client_instance = None
+        if self._async_pool_instance is not None:
+            await self._async_pool_instance.disconnect()
+            self._async_pool_instance = None
+
 
 class Transport(virtual.Transport):
     """Redis Transport."""
@@ -1335,6 +1511,7 @@ class Transport(virtual.Transport):
 
     implements = virtual.Transport.implements.extend(
         asynchronous=True,
+        async_native=HAS_ASYNC_REDIS,
         exchange_type=frozenset(['direct', 'topic', 'fanout'])
     )
 
@@ -1392,6 +1569,64 @@ class Transport(virtual.Transport):
     def on_readable(self, fileno):
         """Handle AIO event for one of our file descriptors."""
         self.cycle.on_readable(fileno)
+
+    # --- Async transport methods ---
+
+    async def aestablish_connection(self):
+        """Async establish connection to the broker.
+
+        For Redis, this creates the initial channel with async capabilities.
+        """
+        self.create_channel(self)
+        return self
+
+    async def aclose_connection(self, connection):
+        """Async close the connection."""
+        # Close all channels
+        for channel in self.channels:
+            if hasattr(channel, 'aclose'):
+                await channel.aclose()
+        self.channels = []
+
+    async def acreate_channel(self, connection):
+        """Async create a new channel."""
+        channel = self.Channel(connection)
+        self.channels.append(channel)
+        return channel
+
+    async def adrain_events(self, connection, timeout=None):
+        """Async drain events from all channels.
+
+        This is the async version of drain_events, using asyncio.wait_for
+        for timeout handling.
+        """
+        from time import monotonic
+        time_start = monotonic()
+
+        while True:
+            # Get the first channel with queued messages
+            for channel in self.channels:
+                if channel._queue_cycle is not None:
+                    queues = channel._queue_cycle.consume(1)
+                    if queues:
+                        queue = queues[0]
+                        try:
+                            message = await channel._aget(queue)
+                            if message:
+                                # Use the transport's _deliver method
+                                return self._deliver(message, queue)
+                        except Empty:
+                            pass
+
+            # Check if timeout reached
+            if timeout is not None:
+                elapsed = monotonic() - time_start
+                if elapsed >= timeout:
+                    raise asyncio.TimeoutError()
+                remaining = timeout - elapsed
+                await asyncio.sleep(min(remaining, 0.1))
+            else:
+                await asyncio.sleep(0.1)
 
 
 if sentinel:

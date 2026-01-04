@@ -323,6 +323,31 @@ class Exchange(MaybeChannelBound):
     def can_cache_declaration(self):
         return not self.auto_delete
 
+    # --- Async methods for native async support ---
+
+    async def adeclare(self, nowait=False, passive=None, channel=None):
+        """Async declare the exchange.
+
+        This is the async version of :meth:`declare`.
+
+        Creates the exchange on the broker, unless passive is set
+        in which case it will only assert that the exchange exists.
+
+        Arguments:
+            nowait (bool): If set the server will not respond, and a
+                response will not be waited for. Default is :const:`False`.
+        """
+        if self._can_declare():
+            passive = self.passive if passive is None else passive
+            chan = channel or self.channel
+            # Use sync declare since exchange_declare doesn't do I/O
+            # in the async path (it just prepares data)
+            return chan.exchange_declare(
+                exchange=self.name, type=self.type, durable=self.durable,
+                auto_delete=self.auto_delete, arguments=self.arguments,
+                nowait=nowait, passive=passive,
+            )
+
 
 class binding(Object):
     """Represents a queue or exchange binding.
@@ -831,6 +856,43 @@ class Queue(MaybeChannelBound):
         else:
             expiring_queue = False
         return not expiring_queue and not self.auto_delete
+
+    # --- Async methods for native async support ---
+
+    async def adeclare(self, nowait=False, channel=None):
+        """Async declare queue and exchange then binds queue to exchange.
+
+        This is the async version of :meth:`declare`.
+        """
+        if not self.no_declare:
+            await self._acreate_exchange(nowait=nowait, channel=channel)
+            await self._acreate_queue(nowait=nowait, channel=channel)
+            await self._acreate_bindings(nowait=nowait, channel=channel)
+        return self.name
+
+    async def _acreate_exchange(self, nowait=False, channel=None):
+        """Async create exchange."""
+        if self.exchange:
+            if hasattr(self.exchange, 'adeclare'):
+                await self.exchange.adeclare(nowait=nowait, channel=channel)
+            else:
+                self.exchange.declare(nowait=nowait, channel=channel)
+
+    async def _acreate_queue(self, nowait=False, channel=None):
+        """Async create queue."""
+        self.queue_declare(nowait=nowait, passive=False, channel=channel)
+        if self.exchange and self.exchange.name:
+            self.queue_bind(nowait=nowait, channel=channel)
+
+    async def _acreate_bindings(self, nowait=False, channel=None):
+        """Async create bindings."""
+        for B in self.bindings:
+            chan = channel or self.channel
+            if hasattr(B, 'adeclare'):
+                await B.adeclare(chan)
+            else:
+                B.declare(chan)
+            B.bind(self, nowait=nowait, channel=chan)
 
     @classmethod
     def from_dict(cls, queue, **options):

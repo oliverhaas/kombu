@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import warnings
 from collections import defaultdict, deque
@@ -12,7 +13,7 @@ from time import time
 
 from . import Consumer, Exchange, Producer, Queue
 from .clocks import LamportClock
-from .common import maybe_declare, oid_from
+from .common import amaybe_declare, maybe_declare, oid_from
 from .exceptions import InconsistencyError
 from .log import get_logger
 from .matcher import match
@@ -421,3 +422,169 @@ class Mailbox:
     @cached_property
     def producer_pool(self):
         return maybe_evaluate(self._producer_pool)
+
+    # --- Async methods for native async support ---
+
+    async def acall(self, destination, command, kwargs=None,
+                    timeout=None, callback=None, channel=None):
+        """Async RPC call to destination.
+
+        This is the async version of :meth:`call`.
+        """
+        return await self._abroadcast(
+            command, kwargs, destination,
+            reply=True, timeout=timeout,
+            callback=callback, channel=channel,
+        )
+
+    async def acast(self, destination, command, kwargs=None):
+        """Async cast command to destination (fire and forget).
+
+        This is the async version of :meth:`cast`.
+        """
+        return await self._abroadcast(command, kwargs, destination)
+
+    async def aabcast(self, command, kwargs=None):
+        """Async broadcast command to all nodes.
+
+        This is the async version of :meth:`abcast`.
+        """
+        return await self._abroadcast(command, kwargs)
+
+    async def amulti_call(self, command, kwargs=None, timeout=1,
+                          limit=None, callback=None, channel=None):
+        """Async multi-node RPC.
+
+        This is the async version of :meth:`multi_call`.
+        """
+        return await self._abroadcast(
+            command, kwargs, reply=True, timeout=timeout, limit=limit,
+            callback=callback, channel=channel,
+        )
+
+    async def _abroadcast(self, command, arguments=None, destination=None,
+                          reply=False, timeout=1, limit=None,
+                          callback=None, channel=None, serializer=None,
+                          pattern=None, matcher=None):
+        """Async broadcast command.
+
+        This is the async version of :meth:`_broadcast`.
+        """
+        if destination is not None and \
+                not isinstance(destination, (list, tuple)):
+            raise ValueError(
+                'destination must be a list/tuple not {}'.format(
+                    type(destination)))
+        if (pattern is not None and not isinstance(pattern, str) and
+                matcher is not None and not isinstance(matcher, str)):
+            raise ValueError(
+                'pattern and matcher must be '
+                'strings not {}, {}'.format(type(pattern), type(matcher))
+            )
+
+        arguments = arguments or {}
+        reply_ticket = reply and uuid() or None
+        chan = channel or await self.connection.adefault_channel()
+
+        # Set reply limit to number of destinations (if specified)
+        if limit is None and destination:
+            limit = destination and len(destination) or None
+
+        serializer = serializer or self.serializer
+        await self._apublish(command, arguments, destination=destination,
+                             reply_ticket=reply_ticket,
+                             channel=chan,
+                             timeout=timeout,
+                             serializer=serializer,
+                             pattern=pattern,
+                             matcher=matcher)
+
+        if reply_ticket:
+            return await self._acollect(reply_ticket, limit=limit,
+                                        timeout=timeout,
+                                        callback=callback,
+                                        channel=chan)
+
+    async def _apublish(self, type, arguments, destination=None,
+                        reply_ticket=None, channel=None, timeout=None,
+                        serializer=None, pattern=None, matcher=None):
+        """Async publish command."""
+        message = {
+            'method': type,
+            'arguments': arguments,
+            'destination': destination,
+            'pattern': pattern,
+            'matcher': matcher,
+        }
+        if reply_ticket:
+            message.update(
+                reply_to={
+                    'exchange': self.reply_exchange.name,
+                    'routing_key': self.oid,
+                },
+            )
+        exchange = self.exchange
+        producer = Producer(channel, exchange, serializer=serializer)
+        await amaybe_declare(exchange, channel)
+        headers = {'clock': self.clock.forward(),
+                   'expires': time() + timeout if timeout else 0}
+        if reply_ticket:
+            await amaybe_declare(self.reply_queue, channel)
+            headers['ticket'] = reply_ticket
+
+        # Use async publish if available
+        if hasattr(producer, 'apublish'):
+            await producer.apublish(
+                message, exchange=exchange, headers=headers,
+            )
+        else:
+            producer.publish(
+                message, exchange=exchange, headers=headers,
+            )
+
+    async def _acollect(self, ticket, limit=None, timeout=1,
+                        callback=None, channel=None, accept=None):
+        """Async collect replies.
+
+        This is the async version of :meth:`_collect`.
+        """
+        if accept is None:
+            accept = self.accept
+        chan = channel or await self.connection.adefault_channel()
+        queue = self.reply_queue
+        consumer = Consumer(chan, [queue], accept=accept, no_ack=True)
+        responses = []
+        unclaimed = self.unclaimed
+        adjust_clock = self.clock.adjust
+
+        try:
+            return unclaimed.pop(ticket)
+        except KeyError:
+            pass
+
+        def on_message(body, message):
+            # ticket header added in kombu 2.5
+            header = message.headers.get
+            adjust_clock(header('clock') or 0)
+            expires = header('expires')
+            if expires and time() > expires:
+                return
+            this_id = header('ticket', ticket)
+            if this_id == ticket:
+                if callback:
+                    callback(body)
+                responses.append(body)
+            else:
+                unclaimed[this_id].append(body)
+
+        consumer.register_callback(on_message)
+        try:
+            async with consumer:
+                for i in limit and range(limit) or count():
+                    try:
+                        await self.connection.adrain_events(timeout=timeout)
+                    except asyncio.TimeoutError:
+                        break
+                return responses
+        finally:
+            chan.after_reply_message_received(queue.name)

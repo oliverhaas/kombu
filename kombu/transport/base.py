@@ -116,6 +116,25 @@ class StdChannel:
     ) -> None:
         self.close()
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None
+    ) -> None:
+        await self.aclose()
+
+    async def aclose(self):
+        """Async close the channel.
+
+        Default implementation calls sync close().
+        Transports with native async support should override this.
+        """
+        self.close()
+
 
 class Management:
     """AMQP Management API (incomplete)."""
@@ -145,6 +164,7 @@ class Implements(dict):
 
 default_transport_capabilities = Implements(
     asynchronous=False,
+    async_native=False,  # True if transport supports native async/await
     exchange_type=frozenset(['direct', 'topic', 'fanout', 'headers']),
     heartbeats=False,
 )
@@ -200,6 +220,41 @@ class Transport:
 
     def drain_events(self, connection, **kwargs):
         raise _LeftBlank(self, 'drain_events')
+
+    # Async transport interface methods
+    # Transports with native async support (async_native=True) should override these
+
+    async def aestablish_connection(self):
+        """Async establish connection to the broker.
+
+        Default implementation raises NotImplementedError.
+        Transports with native async support should override this.
+        """
+        raise _LeftBlank(self, 'aestablish_connection')
+
+    async def aclose_connection(self, connection):
+        """Async close the connection.
+
+        Default implementation raises NotImplementedError.
+        Transports with native async support should override this.
+        """
+        raise _LeftBlank(self, 'aclose_connection')
+
+    async def acreate_channel(self, connection):
+        """Async create a new channel.
+
+        Default implementation raises NotImplementedError.
+        Transports with native async support should override this.
+        """
+        raise _LeftBlank(self, 'acreate_channel')
+
+    async def adrain_events(self, connection, **kwargs):
+        """Async wait for events from the broker.
+
+        Default implementation raises NotImplementedError.
+        Transports with native async support should override this.
+        """
+        raise _LeftBlank(self, 'adrain_events')
 
     def heartbeat_check(self, connection, rate=2):
         pass
@@ -269,3 +324,8 @@ class Transport:
     @property
     def supports_ev(self):
         return self.implements.asynchronous
+
+    @property
+    def supports_async(self):
+        """Return True if transport supports native async/await."""
+        return self.implements.async_native

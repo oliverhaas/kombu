@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from collections import deque
 from queue import Empty
@@ -115,6 +116,79 @@ class SimpleBase:
     def __bool__(self):
         return True
     __nonzero__ = __bool__
+
+    # --- Async methods for native async support ---
+
+    async def aget(self, block=True, timeout=None):
+        """Async get message from queue.
+
+        This is the async version of :meth:`get`.
+        """
+        if not block:
+            return await self.aget_nowait()
+
+        self._consume()
+
+        time_start = monotonic()
+        remaining = timeout
+        while True:
+            if self.buffer:
+                return self.buffer.popleft()
+
+            if remaining is not None and remaining <= 0.0:
+                raise self.Empty()
+
+            try:
+                await self.channel.connection.client.adrain_events(
+                    timeout=remaining
+                )
+            except asyncio.TimeoutError:
+                raise self.Empty()
+
+            if remaining is not None:
+                elapsed = monotonic() - time_start
+                remaining = timeout - elapsed
+
+    async def aget_nowait(self):
+        """Async get message without blocking.
+
+        This is the async version of :meth:`get_nowait`.
+        """
+        m = self.queue.get(no_ack=self.no_ack, accept=self.consumer.accept)
+        if not m:
+            raise self.Empty()
+        return m
+
+    async def aput(self, message, serializer=None, headers=None,
+                   compression=None, routing_key=None, **kwargs):
+        """Async put message on queue.
+
+        This is the async version of :meth:`put`.
+        """
+        await self.producer.apublish(
+            message,
+            serializer=serializer,
+            routing_key=routing_key,
+            headers=headers,
+            compression=compression,
+            **kwargs
+        )
+
+    async def aclose(self):
+        """Async close the queue.
+
+        This is the async version of :meth:`close`.
+        """
+        if hasattr(self.consumer, 'acancel'):
+            await self.consumer.acancel()
+        else:
+            self.consumer.cancel()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.aclose()
 
 
 class SimpleQueue(SimpleBase):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import random
 import threading
@@ -17,6 +18,7 @@ from .encoding import safe_repr as _safe_repr
 __all__ = (
     'LRUCache', 'memoize', 'lazy', 'maybe_evaluate',
     'is_list', 'maybe_list', 'dictfilter', 'retry_over_time',
+    'aretry_over_time',
 )
 
 KEYWORD_MARK = object()
@@ -332,6 +334,82 @@ def retry_over_time(fun, catch, args=None, kwargs=None, errback=None,
                     sleep(1.0)
                 # sleep remainder after int truncation above.
                 sleep(abs(int(tts) - tts))
+
+
+async def aretry_over_time(fun, catch, args=None, kwargs=None, errback=None,
+                           max_retries=None, interval_start=2, interval_step=2,
+                           interval_max=30, callback=None, timeout=None):
+    """Async retry the function over and over until max retries is exceeded.
+
+    This is the async version of :func:`retry_over_time`, using
+    :func:`asyncio.sleep` instead of :func:`time.sleep`.
+
+    For each retry we sleep a for a while before we try again, this interval
+    is increased for every retry until the max seconds is reached.
+
+    Arguments:
+    ---------
+        fun (Callable): The async function to try (coroutine function).
+        catch (Tuple[BaseException]): Exceptions to catch, can be either
+            tuple or a single exception class.
+
+    Keyword Arguments:
+    -----------------
+        args (Tuple): Positional arguments passed on to the function.
+        kwargs (Dict): Keyword arguments passed on to the function.
+        errback (Callable): Callback for when an exception in ``catch``
+            is raised.  The callback must take three arguments:
+            ``exc``, ``interval_range`` and ``retries``, where ``exc``
+            is the exception instance, ``interval_range`` is an iterator
+            which return the time in seconds to sleep next, and ``retries``
+            is the number of previous retries. Can be sync or async.
+        max_retries (int): Maximum number of retries before we give up.
+            If neither of this and timeout is set, we will retry forever.
+            If one of this and timeout is reached, stop.
+        interval_start (float): How long (in seconds) we start sleeping
+            between retries.
+        interval_step (float): By how much the interval is increased for
+            each retry.
+        interval_max (float): Maximum number of seconds to sleep
+            between retries.
+        timeout (int): Maximum seconds waiting before we give up.
+        callback (Callable): Optional callback called during each retry
+            iteration. Can be sync or async.
+    """
+    kwargs = {} if not kwargs else kwargs
+    args = [] if not args else args
+    interval_range = fxrange(interval_start,
+                             interval_max + interval_start,
+                             interval_step, repeatlast=True)
+    end = time() + timeout if timeout else None
+    for retries in count():
+        try:
+            return await fun(*args, **kwargs)
+        except catch as exc:
+            if max_retries is not None and retries >= max_retries:
+                raise
+            if end and time() > end:
+                raise
+            if callback:
+                result = callback()
+                if asyncio.iscoroutine(result):
+                    await result
+            if errback:
+                result = errback(exc, interval_range, retries)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                tts = float(result)
+            else:
+                tts = float(next(interval_range))
+            if tts:
+                for _ in range(int(tts)):
+                    if callback:
+                        result = callback()
+                        if asyncio.iscoroutine(result):
+                            await result
+                    await asyncio.sleep(1.0)
+                # sleep remainder after int truncation above.
+                await asyncio.sleep(abs(int(tts) - tts))
 
 
 def reprkwargs(kwargs, sep=', ', fmt='{0}={1}'):

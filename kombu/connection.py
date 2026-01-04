@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import sys
@@ -26,7 +27,8 @@ from .log import get_logger
 from .resource import Resource
 from .transport import get_transport_cls, supports_librabbitmq
 from .utils.collections import HashedSeq
-from .utils.functional import dictfilter, lazy, retry_over_time, shufflecycle
+from .utils.functional import (aretry_over_time, dictfilter, lazy,
+                               retry_over_time, shufflecycle)
 from .utils.objects import cached_property
 from .utils.url import as_url, maybe_sanitize_url, parse_url, quote, urlparse
 
@@ -1033,6 +1035,170 @@ class Connection:
     @property
     def is_evented(self):
         return self.transport.implements.asynchronous
+
+    @property
+    def supports_async(self):
+        """Return True if the transport supports native async/await."""
+        return getattr(self.transport.implements, 'async_native', False)
+
+    # --- Async methods for native async support ---
+
+    _async_connection = None
+    _async_default_channel = None
+
+    async def aconnect(self):
+        """Async establish connection to server.
+
+        Returns:
+            Connection: self
+        """
+        return await self._aensure_connection(
+            max_retries=1, reraise_as_library_errors=False
+        )
+
+    async def _aensure_connection(
+        self,
+        errback=None,
+        max_retries=None,
+        interval_start=2,
+        interval_step=2,
+        interval_max=30,
+        callback=None,
+        reraise_as_library_errors=True,
+        timeout=None
+    ):
+        """Async ensure we have a connection to the server.
+
+        If not already connected, establish a new connection.
+        Uses async retry logic with exponential backoff.
+        """
+        if self.async_connected:
+            return self._async_connection
+
+        async def on_error(exc, intervals, retries, interval=0):
+            round_val = self.completes_cycle(retries)
+            if round_val:
+                interval = next(intervals)
+            if errback:
+                result = errback(exc, interval)
+                if asyncio.iscoroutine(result):
+                    await result
+            self.maybe_switch_next()
+            return interval if round_val else 0
+
+        try:
+            return await aretry_over_time(
+                self._async_connection_factory,
+                self.recoverable_connection_errors,
+                (), {},
+                on_error, max_retries,
+                interval_start, interval_step, interval_max,
+                callback, timeout=timeout
+            )
+        except self.recoverable_connection_errors as exc:
+            if reraise_as_library_errors:
+                raise exceptions.OperationalError(str(exc)).with_traceback(
+                    sys.exc_info()[2]
+                )
+            raise
+
+    async def _async_connection_factory(self):
+        """Async create new connection."""
+        self.declared_entities.clear()
+        self._async_default_channel = None
+        self._async_connection = await self.transport.aestablish_connection()
+        self._closed = False
+        return self._async_connection
+
+    @property
+    def async_connected(self):
+        """Return True if async connection is established."""
+        return (not self._closed and
+                self._async_connection is not None and
+                self.transport.verify_connection(self._async_connection))
+
+    async def adefault_channel(self):
+        """Async get default channel.
+
+        Created upon access and closed when the connection is closed.
+
+        Returns:
+            Channel: The default async channel.
+        """
+        conn_opts = self._extract_failover_opts()
+        await self._aensure_connection(**conn_opts)
+
+        if self._async_default_channel is None:
+            self._async_default_channel = await self.achannel()
+        return self._async_default_channel
+
+    async def achannel(self):
+        """Async create and return a new channel."""
+        self._debug('create async channel')
+        return await self.transport.acreate_channel(self._async_connection)
+
+    async def adrain_events(self, **kwargs):
+        """Async wait for a single event from the server.
+
+        Arguments:
+            **kwargs: Extra arguments passed to transport's drain_events.
+
+        Raises:
+            socket.timeout: if the timeout is exceeded.
+        """
+        return await self.transport.adrain_events(
+            self._async_connection, **kwargs
+        )
+
+    async def aclose(self):
+        """Async close the connection (if open)."""
+        if not self._closed:
+            await self._aclose()
+
+    async def _aclose(self):
+        """Async really close connection."""
+        await self._ado_close_self()
+        self._do_close_transport()
+        self._debug('async closed')
+        self._closed = True
+
+    async def _ado_close_self(self):
+        """Async close default channel and connection."""
+        self.declared_entities.clear()
+        if self._async_default_channel is not None:
+            try:
+                if hasattr(self._async_default_channel, 'aclose'):
+                    await self._async_default_channel.aclose()
+                else:
+                    self._async_default_channel.close()
+            except (self.connection_errors + (AttributeError, socket.error)):
+                pass
+            self._async_default_channel = None
+
+        if self._async_connection is not None:
+            try:
+                await self.transport.aclose_connection(self._async_connection)
+            except (self.connection_errors + (AttributeError, socket.error)):
+                pass
+            self._async_connection = None
+
+    async def arelease(self):
+        """Async release connection.
+
+        The underlying connection will not be released if there is an
+        active context containing a block, in this case it will be
+        released when the last block exits.
+        """
+        if self._default_channel:
+            self._default_channel.close()
+            self._default_channel = None
+        await self.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.arelease()
 
 
 BrokerConnection = Connection

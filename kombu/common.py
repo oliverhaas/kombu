@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import threading
@@ -18,10 +19,10 @@ from .log import get_logger
 from .serialization import registry as serializers
 from .utils.uuid import uuid
 
-__all__ = ('Broadcast', 'maybe_declare', 'uuid',
+__all__ = ('Broadcast', 'maybe_declare', 'amaybe_declare', 'uuid',
            'itermessages', 'send_reply',
            'collect_replies', 'insured', 'drain_consumer',
-           'eventloop')
+           'eventloop', 'aeventloop')
 
 #: Prefetch count can't exceed short.
 PREFETCH_COUNT_MAX = 0xFFFF
@@ -168,6 +169,71 @@ def _imaybe_declare(entity, channel, **retry_policy):
 
     return entity.channel.connection.client.ensure(
         entity, _maybe_declare, **retry_policy)(entity, channel)
+
+
+# --- Async versions ---
+
+async def amaybe_declare(entity, channel=None, retry=False, **retry_policy):
+    """Async declare entity (cached).
+
+    This is the async version of :func:`maybe_declare`.
+    """
+    return await _amaybe_declare(entity, channel)
+
+
+async def _amaybe_declare(entity, channel):
+    """Async maybe declare implementation."""
+    orig = entity
+
+    _ensure_channel_is_bound(entity, channel)
+
+    if channel is None or channel.connection is None:
+        if not entity.is_bound:
+            raise ChannelError(
+                f"channel is None and entity {entity} not bound.")
+        channel = entity.channel
+
+    declared = ident = None
+    if channel.connection and entity.can_cache_declaration:
+        declared = channel.connection.client.declared_entities
+        ident = hash(entity)
+        if ident in declared:
+            return False
+
+    if not channel.connection:
+        raise RecoverableConnectionError('channel disconnected')
+
+    # Use async declare if available
+    if hasattr(entity, 'adeclare'):
+        await entity.adeclare(channel=channel)
+    else:
+        entity.declare(channel=channel)
+
+    if declared is not None and ident:
+        declared.add(ident)
+    if orig is not None:
+        orig.name = entity.name
+    return True
+
+
+async def aeventloop(conn, limit=None, timeout=None, ignore_timeouts=False):
+    """Async eventloop generator around ``Connection.adrain_events``.
+
+    This is the async version of :func:`eventloop`.
+
+    Able to drain events forever, with a limit, and optionally ignoring
+    timeout errors.
+
+    Examples:
+        >>> async for _ in aeventloop(conn, timeout=1, ignore_timeouts=True):
+        ...     pass  # loop forever
+    """
+    for i in limit and range(limit) or count():
+        try:
+            yield await conn.adrain_events(timeout=timeout)
+        except asyncio.TimeoutError:
+            if timeout and not ignore_timeouts:
+                raise
 
 
 def drain_consumer(consumer, limit=1, timeout=None, callbacks=None):

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from queue import Empty, LifoQueue
 
 from . import exceptions
@@ -203,6 +204,121 @@ class Resource:
     @limit.setter
     def limit(self, limit):
         self.resize(limit)
+
+    # --- Async pool methods for native async support ---
+
+    _async_resource: asyncio.Queue = None
+    _async_dirty: set = None
+
+    def _get_async_queue(self):
+        """Lazily initialize async queue."""
+        if self._async_resource is None:
+            self._async_resource = asyncio.Queue(
+                maxsize=self._limit or 0
+            )
+            self._async_dirty = set()
+        return self._async_resource
+
+    async def _aadd_when_empty(self):
+        """Async add new resource when pool is empty."""
+        if self.limit and len(self._async_dirty) >= self.limit:
+            raise self.LimitExceeded(self.limit)
+        await self._async_resource.put(self.new())
+
+    async def aacquire(self, block=True, timeout=None):
+        """Async acquire resource from pool.
+
+        Arguments:
+            block (bool): If the limit is exceeded,
+                then wait until there is an available item.
+            timeout (float): Timeout to wait
+                if ``block`` is true.  Default is :const:`None` (forever).
+
+        Raises:
+            LimitExceeded: if pool limit exceeded and timeout expired.
+        """
+        if self._closed:
+            raise RuntimeError('Acquire on closed pool')
+
+        queue = self._get_async_queue()
+
+        if self.limit:
+            while True:
+                try:
+                    if timeout is not None:
+                        R = await asyncio.wait_for(
+                            queue.get(), timeout=timeout
+                        )
+                    elif block:
+                        try:
+                            R = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            await self._aadd_when_empty()
+                            continue
+                    else:
+                        try:
+                            R = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            await self._aadd_when_empty()
+                            continue
+                except asyncio.TimeoutError:
+                    raise self.LimitExceeded(self.limit)
+
+                try:
+                    R = await self.aprepare(R)
+                except BaseException:
+                    if isinstance(R, lazy):
+                        await queue.put(R)
+                    else:
+                        await self.arelease(R)
+                    raise
+                self._async_dirty.add(R)
+                break
+        else:
+            R = await self.aprepare(self.new())
+
+        async def release():
+            await self.arelease(R)
+        R.arelease = release
+
+        return R
+
+    async def aprepare(self, resource):
+        """Async prepare resource for use."""
+        if callable(resource):
+            resource = resource()
+        return resource
+
+    async def aclose_resource(self, resource):
+        """Async close resource."""
+        if hasattr(resource, 'aclose'):
+            await resource.aclose()
+        elif hasattr(resource, 'close'):
+            resource.close()
+
+    async def arelease_resource(self, resource):
+        """Async hook called after releasing resource."""
+        pass
+
+    async def arelease(self, resource):
+        """Async release resource back to pool."""
+        if self.limit:
+            if self._async_dirty is not None:
+                self._async_dirty.discard(resource)
+            if self._async_resource is not None:
+                await self._async_resource.put(resource)
+            await self.arelease_resource(resource)
+        else:
+            await self.aclose_resource(resource)
+
+    @asynccontextmanager
+    async def aacquire_resource(self, block=True, timeout=None):
+        """Async context manager for acquiring resources."""
+        resource = await self.aacquire(block=block, timeout=timeout)
+        try:
+            yield resource
+        finally:
+            await self.arelease(resource)
 
     if os.environ.get('KOMBU_DEBUG_POOL'):  # pragma: no cover
         _orig_acquire = acquire
