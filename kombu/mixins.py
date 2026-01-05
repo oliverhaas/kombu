@@ -8,7 +8,7 @@ from functools import partial
 from itertools import count
 from typing import TYPE_CHECKING, Any
 
-from .common import aignore_errors
+from .common import ignore_errors
 from .log import get_logger
 from .messaging import Consumer, Producer
 from .utils.encoding import safe_repr
@@ -242,7 +242,7 @@ class ConsumerMixin:
 
     async def maybe_conn_error(self, fun) -> Any:
         """Execute function ignoring connection errors."""
-        async with aignore_errors(self.connection):
+        async with ignore_errors(self.connection):
             result = fun()
             if asyncio.iscoroutine(result):
                 return await result

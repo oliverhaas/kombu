@@ -24,11 +24,14 @@ if TYPE_CHECKING:
 
 __all__ = (
     "Broadcast",
-    "aeventloop",
-    "adrain_consumer",
-    "aitermessages",
-    "amaybe_declare",
-    "asend_reply",
+    "QoS",
+    "collect_replies",
+    "drain_consumer",
+    "eventloop",
+    "ignore_errors",
+    "itermessages",
+    "maybe_declare",
+    "send_reply",
     "uuid",
 )
 
@@ -104,7 +107,7 @@ class Broadcast(Queue):
         )
 
 
-async def amaybe_declare(
+async def maybe_declare(
     entity: Exchange | Queue,
     channel: Channel | None = None,
 ) -> bool:
@@ -131,7 +134,7 @@ async def amaybe_declare(
     return True
 
 
-async def adrain_consumer(
+async def drain_consumer(
     consumer: Consumer,
     limit: int = 1,
     timeout: float | None = None,
@@ -159,14 +162,14 @@ async def adrain_consumer(
 
     try:
         async with consumer:
-            async for _ in aeventloop(consumer._connection, limit=limit, timeout=timeout, ignore_timeouts=True):
+            async for _ in eventloop(consumer._connection, limit=limit, timeout=timeout, ignore_timeouts=True):
                 while acc:
                     yield acc.popleft()
     finally:
         consumer._callbacks = original_callbacks
 
 
-async def aitermessages(
+async def itermessages(
     conn: Connection,
     queue: Queue,
     limit: int = 1,
@@ -188,7 +191,7 @@ async def aitermessages(
         Tuple of (body, message) for each received message.
     """
     consumer = conn.Consumer(queues=[queue], **kwargs)
-    async for item in adrain_consumer(
+    async for item in drain_consumer(
         consumer,
         limit=limit,
         timeout=timeout,
@@ -197,7 +200,7 @@ async def aitermessages(
         yield item
 
 
-async def aeventloop(
+async def eventloop(
     conn: Connection,
     limit: int | None = None,
     timeout: float | None = None,
@@ -213,11 +216,11 @@ async def aeventloop(
 
     Example:
         async def run(conn):
-            async for _ in aeventloop(conn, timeout=1, ignore_timeouts=True):
+            async for _ in eventloop(conn, timeout=1, ignore_timeouts=True):
                 pass  # loop forever
 
         # With a limit:
-        async for _ in aeventloop(conn, limit=10, timeout=1):
+        async for _ in eventloop(conn, limit=10, timeout=1):
             pass
 
     Args:
@@ -239,7 +242,7 @@ async def aeventloop(
             yield
 
 
-async def asend_reply(
+async def send_reply(
     exchange: Exchange | str,
     req: Message,
     msg: Any,
@@ -265,7 +268,7 @@ async def asend_reply(
     )
 
 
-async def acollect_replies(
+async def collect_replies(
     conn: Connection,
     queue: Queue,
     limit: int = 1,
@@ -286,7 +289,7 @@ async def acollect_replies(
     Yields:
         Message bodies.
     """
-    async for body, message in aitermessages(
+    async for body, message in itermessages(
         conn,
         queue,
         limit=limit,
@@ -300,7 +303,7 @@ async def acollect_replies(
 
 
 @asynccontextmanager
-async def aignore_errors(conn: Connection):
+async def ignore_errors(conn: Connection):
     """Async context manager to ignore connection errors.
 
     Args:
