@@ -1,2 +1,0 @@
-pytest-xdist==3.8.0
-pytest-rerunfailures>=11.1.2

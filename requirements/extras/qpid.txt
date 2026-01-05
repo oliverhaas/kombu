@@ -1,2 +1,0 @@
-qpid-python==1.36.0-1
-qpid-tools==1.36.0-1

@@ -1,22 +1,108 @@
-[tool.codespell]
-ignore-words-list = "assertin"
-skip = "./.*,docs/AUTHORS.txt,docs/history/*,docs/spelling_wordlist.txt,Changelog.rst,CONTRIBUTORS.txt,*.key"
+[project]
+name = "kombu-asyncio"
+version = "6.0.0a1"
+description = "Pure asyncio messaging library for Python"
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.10"
+keywords = ["messaging", "asyncio", "redis", "queue", "async", "python", "celery"]
+authors = [{ name = "Ask Solem", email = "auvipy@gmail.com" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: AsyncIO",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: BSD License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Communications",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: System :: Distributed Computing",
+  "Topic :: System :: Networking",
+]
+dependencies = ["redis>=7.1.0"]
+
+[project.urls]
+Changelog = "https://github.com/oliverhaas/kombu/blob/main-asyncio/Changelog.rst"
+Source = "https://github.com/oliverhaas/kombu"
+
+[project.optional-dependencies]
+msgpack = ["msgpack"]
+yaml = ["PyYAML>=3.10"]
+
+[dependency-groups]
+dev = [
+  "pre-commit>=4.0.0",
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.24.0",
+  "pytest-cov>=6.0.0",
+  "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kombu"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+explicit-preview-rules = true
+fixable = ["ALL"]
+ignore = [
+  "ANN401",  # Any needed for untyped APIs
+  "ARG001",  # Signal handlers and overrides have required signatures
+  "ARG002",
+  "C901",    # Some functions are inherently complex
+  "COM812",  # Conflicts with ruff-format
+  "D",       # Docstring rules - existing code lacks comprehensive docstrings
+  "E5",      # 120 char limit is sufficient
+  "EM101",   # Extracting exception messages to variables hurts readability
+  "EM102",
+  "FBT001",  # Boolean traps - too many violations, breaks compatibility
+  "FBT002",
+  "N802",    # Naming follows kombu conventions
+  "N806",
+  "PLC0415", # Lazy imports for optional dependencies
+  "PLR1704", # Redefining argument in context manager
+  "PYI024",  # namedtuple usage follows kombu patterns
+  "RUF005",  # Tuple concatenation is clearer
+  "RUF015",  # Readability over micro-optimization
+  "RUF059",  # Keep unused variables explicit
+  "SLF001",  # Private member access needed for redis-py internals
+  "TRY003",  # Long exception messages are fine
+]
+preview = true
+select = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+"t/**" = [
+  "PLR0913", # Too many arguments in test fixtures
+  "PLR2004", # Magic values in tests are fine
+  "S101",    # assert in tests
+]
+
+[tool.pytest.ini_options]
+testpaths = ["t/unit"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["unit: marks tests as unit tests", "integration: marks tests as integration tests"]
 
 [tool.coverage.run]
 branch = true
-cover_pylib = false
-include = ["*kombu/*"]
-omit = ["kombu.tests.*"]
+source = ["kombu"]
+omit = ["*/__init__.py"]
 
 [tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "except ImportError:"
-]
-omit = [
-    "*/python?.?/*",
-    "*/site-packages/*",
-    "*/pypy/*",
-    "*kombu/utils/debug.py",
-]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]

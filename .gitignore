@@ -1,43 +1,86 @@
-.DS_Store
-*.pyc
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
 *$py.class
-*~
-*.sqlite
-*.sqlite-journal
-settings_local.py
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
 build/
-.build/
-_build/
-.*.sw*
+develop-eggs/
 dist/
-*.egg-info
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
 pip-log.txt
-devdatabase.db
-^parts
-^eggs
-^bin
-developer-eggs
-downloads
-Documentation/*
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
 .tox/
-nosetests.xml
-kombu/tests/cover
-kombu/tests/coverage.xml
+.nox/
 .coverage
-dump.rdb
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+junit.xml
+
+# Translations
+*.mo
+*.pot
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDEs
 .idea/
 .vscode/
-.cache/
-.pytest_cache/
-htmlcov/
-test.db
-coverage.xml
-venv/
-env
-.eggs
-.python-version
-.coverage.*
-control/
-.env
-.hypothesis/*
-junit.xml
+*.swp
+*.swo
+*~
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ruff
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Redis
+dump.rdb
+
+# uv
+uv.lock
