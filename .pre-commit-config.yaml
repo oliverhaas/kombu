@@ -49,3 +49,13 @@ repos:
         entry: uv run ruff format
         language: system
         pass_filenames: false
+
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        language: system
+        entry: uv run ty check
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
