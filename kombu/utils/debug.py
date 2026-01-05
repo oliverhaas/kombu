@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from vine.utils import wraps
+from functools import wraps
 
 from kombu.log import get_logger
 

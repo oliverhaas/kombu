@@ -59,8 +59,6 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import aiofiles
-
 from kombu.exceptions import ChannelError
 from kombu.log import get_logger
 from kombu.message import Message
@@ -89,7 +87,7 @@ exchange_queue_t = namedtuple("exchange_queue_t", ["routing_key", "pattern", "qu
 class Channel(BaseChannel):
     """Pure asyncio filesystem channel.
 
-    Uses aiofiles for async file I/O operations.
+    Uses asyncio.to_thread() for non-blocking file I/O operations.
     """
 
     # Shared state across all channels
@@ -244,8 +242,11 @@ class Channel(BaseChannel):
         bindings = self._bindings.get(exchange, [])
         data = json_dumps([list(b) for b in bindings])
 
-        async with aiofiles.open(exchange_file, "w") as f:
-            await f.write(data)
+        def _write():
+            with open(exchange_file, "w") as f:
+                f.write(data)
+
+        await asyncio.to_thread(_write)
 
     async def _load_exchange_bindings(self, exchange: str) -> list[exchange_queue_t]:
         """Load exchange bindings from control folder."""
@@ -256,12 +257,15 @@ class Channel(BaseChannel):
         if not exchange_file.exists():
             return []
 
+        def _read():
+            with open(exchange_file) as f:
+                return f.read()
+
         try:
-            async with aiofiles.open(exchange_file) as f:
-                data = await f.read()
-                bindings = json_loads(data)
-                self._bindings[exchange] = [exchange_queue_t(*b) for b in bindings]
-                return self._bindings[exchange]
+            data = await asyncio.to_thread(_read)
+            bindings = json_loads(data)
+            self._bindings[exchange] = [exchange_queue_t(*b) for b in bindings]
+            return self._bindings[exchange]
         except Exception:
             return []
 
@@ -394,9 +398,12 @@ class Channel(BaseChannel):
         filename = f"{timestamp}_{uuid.uuid4()}.{queue}.msg"
         filepath = self._data_folder_out / filename
 
+        def _write():
+            with open(filepath, "wb") as f:
+                f.write(message)
+
         try:
-            async with aiofiles.open(filepath, "wb") as f:
-                await f.write(message)
+            await asyncio.to_thread(_write)
         except OSError as e:
             raise ChannelError(f"Cannot write message to {filepath}: {e}")
 
@@ -435,9 +442,12 @@ class Channel(BaseChannel):
                 # File may be locked or already moved
                 continue
 
+            def _read():
+                with open(dest_path, "rb") as f:
+                    return f.read()
+
             try:
-                async with aiofiles.open(dest_path, "rb") as f:
-                    data = await f.read()
+                data = await asyncio.to_thread(_read)
 
                 if not self._store_processed:
                     dest_path.unlink()
