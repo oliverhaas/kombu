@@ -1,6 +1,6 @@
 # kombu-asyncio
 
-**Pure asyncio messaging library for Python - Redis transport only**
+**Pure asyncio messaging library for Python**
 
 > **EXPERIMENTAL**: This is an experimental asyncio-native rewrite of Kombu.
 > It is a **completely breaking change** from the original Kombu library.
@@ -16,7 +16,6 @@ this library is built asyncio-first.
 **Key differences from Kombu:**
 
 - All operations are `async`/`await` (no sync API)
-- Only Redis transport supported (via `redis.asyncio`)
 - No Hub/Timer - uses asyncio event loop directly
 - Simplified, minimal codebase
 - Python 3.10+ required
@@ -109,7 +108,6 @@ This is **not** a drop-in replacement for Kombu. Key differences:
 | `conn.drain_events()` | `await conn.drain_events()` |
 | `producer.publish(...)` | `await producer.publish(...)` |
 | `message.ack()` | `await message.ack()` |
-| Multiple transports | Redis only |
 | Sync + async API | Async only |
 
 ## Celery Integration
@@ -130,5 +128,5 @@ BSD-3-Clause (same as Kombu)
 ## Links
 
 - [Kombu Documentation](https://kombu.readthedocs.io/) (original sync version)
-- [Source Code](https://github.com/celery/kombu/tree/main-asyncio)
+- [Source Code](https://github.com/oliverhaas/kombu/tree/main-asyncio)
 - [Celery Project](https://github.com/celery/celery)
