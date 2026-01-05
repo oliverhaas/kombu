@@ -20,7 +20,7 @@ import re
 from collections import namedtuple
 from typing import cast
 
-__version__ = "6.0.0a1"
+__version__ = "6.0.0a2"
 __author__ = "Ask Solem"
 __contact__ = "auvipy@gmail.com"
 __homepage__ = "https://kombu.readthedocs.io"
