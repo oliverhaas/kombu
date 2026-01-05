@@ -7,27 +7,35 @@ from unittest.mock import Mock
 import pytest
 
 from kombu.utils import functional as utils
-from kombu.utils.functional import (ChannelPromise, LRUCache, accepts_argument,
-                                    fxrange, fxrangemax, lazy, maybe_evaluate,
-                                    maybe_list, memoize, reprcall, reprkwargs,
-                                    retry_over_time)
+from kombu.utils.functional import (
+    ChannelPromise,
+    LRUCache,
+    accepts_argument,
+    fxrange,
+    fxrangemax,
+    lazy,
+    maybe_evaluate,
+    maybe_list,
+    memoize,
+    reprcall,
+    reprkwargs,
+    retry_over_time,
+)
 
 
 class test_ChannelPromise:
-
     def test_repr(self):
-        obj = Mock(name='cb')
-        assert 'promise' in repr(ChannelPromise(obj))
+        obj = Mock(name="cb")
+        assert "promise" in repr(ChannelPromise(obj))
         obj.assert_not_called()
 
 
 class test_shufflecycle:
-
     def test_shuffles(self):
         prev_repeat, utils.repeat = utils.repeat, Mock()
         try:
             utils.repeat.return_value = list(range(10))
-            values = {'A', 'B', 'C'}
+            values = {"A", "B", "C"}
             cycle = utils.shufflecycle(values)
             seen = set()
             for i in range(10):
@@ -46,7 +54,6 @@ def double(x):
 
 
 class test_LRUCache:
-
     def test_expires(self):
         limit = 100
         x = LRUCache(limit=limit)
@@ -102,9 +109,9 @@ class test_LRUCache:
 
     def test_incr(self):
         c = LRUCache()
-        c.update(a='1')
-        c.incr('a')
-        assert c['a'] == '2'
+        c.update(a="1")
+        c.incr("a")
+        assert c["a"] == "2"
 
 
 def test_memoize():
@@ -124,13 +131,11 @@ def test_memoize():
 
 
 class test_lazy:
-
     def test__str__(self):
-        assert (str(lazy(lambda: 'the quick brown fox')) ==
-                'the quick brown fox')
+        assert str(lazy(lambda: "the quick brown fox")) == "the quick brown fox"
 
     def test__repr__(self):
-        assert repr(lazy(lambda: 'fi fa fo')).strip('u') == "'fi fa fo'"
+        assert repr(lazy(lambda: "fi fa fo")).strip("u") == "'fi fa fo'"
 
     def test_evaluate(self):
         assert lazy(lambda: 2 + 2)() == 4
@@ -148,6 +153,7 @@ class test_lazy:
 
     def test__deepcopy__(self):
         from copy import deepcopy
+
         x = lazy(double, 4)
         y = deepcopy(x)
         assert x._fun == y._fun
@@ -155,16 +161,18 @@ class test_lazy:
         assert x() == y()
 
 
-@pytest.mark.parametrize('obj,expected', [
-    (lazy(lambda: 10), 10),
-    (20, 20),
-])
+@pytest.mark.parametrize(
+    "obj,expected",
+    [
+        (lazy(lambda: 10), 10),
+        (20, 20),
+    ],
+)
 def test_maybe_evaluate(obj, expected):
     assert maybe_evaluate(obj) == expected
 
 
 class test_retry_over_time:
-
     class Predicate(Exception):
         pass
 
@@ -188,14 +196,11 @@ class test_retry_over_time:
         prev_count, utils.count = utils.count, Mock()
         try:
             utils.count.return_value = list(range(1))
-            x = retry_over_time(self.myfun, self.Predicate,
-                                errback=None, interval_max=14)
+            x = retry_over_time(self.myfun, self.Predicate, errback=None, interval_max=14)
             assert x is None
             utils.count.return_value = list(range(10))
             cb = Mock()
-            x = retry_over_time(self.myfun, self.Predicate,
-                                errback=self.errback, callback=cb,
-                                interval_max=14)
+            x = retry_over_time(self.myfun, self.Predicate, errback=self.errback, callback=cb, interval_max=14)
             assert x == 42
             assert self.index == 9
             cb.assert_called_with()
@@ -203,49 +208,59 @@ class test_retry_over_time:
             utils.count = prev_count
 
     def test_retry_timeout(self):
-
         with pytest.raises(self.Predicate):
-            retry_over_time(
-                self.myfun, self.Predicate,
-                errback=self.errback, interval_max=14, timeout=1
-            )
+            retry_over_time(self.myfun, self.Predicate, errback=self.errback, interval_max=14, timeout=1)
         assert self.index == 1
 
         # no errback
         with pytest.raises(self.Predicate):
             retry_over_time(
-                self.myfun, self.Predicate,
-                errback=None, timeout=1,
+                self.myfun,
+                self.Predicate,
+                errback=None,
+                timeout=1,
             )
 
     @pytest.mark.sleepdeprived_patched_module(utils)
     def test_retry_zero(self, sleepdeprived):
         with pytest.raises(self.Predicate):
             retry_over_time(
-                self.myfun, self.Predicate,
-                max_retries=0, errback=self.errback, interval_max=14,
+                self.myfun,
+                self.Predicate,
+                max_retries=0,
+                errback=self.errback,
+                interval_max=14,
             )
         assert self.index == 0
         # no errback
         with pytest.raises(self.Predicate):
             retry_over_time(
-                self.myfun, self.Predicate,
-                max_retries=0, errback=None, interval_max=14,
+                self.myfun,
+                self.Predicate,
+                max_retries=0,
+                errback=None,
+                interval_max=14,
             )
 
     @pytest.mark.sleepdeprived_patched_module(utils)
     def test_retry_once(self, sleepdeprived):
         with pytest.raises(self.Predicate):
             retry_over_time(
-                self.myfun, self.Predicate,
-                max_retries=1, errback=self.errback, interval_max=14,
+                self.myfun,
+                self.Predicate,
+                max_retries=1,
+                errback=self.errback,
+                interval_max=14,
             )
         assert self.index == 1
         # no errback
         with pytest.raises(self.Predicate):
             retry_over_time(
-                self.myfun, self.Predicate,
-                max_retries=1, errback=None, interval_max=14,
+                self.myfun,
+                self.Predicate,
+                max_retries=1,
+                errback=None,
+                interval_max=14,
             )
 
     @pytest.mark.sleepdeprived_patched_module(utils)
@@ -253,7 +268,6 @@ class test_retry_over_time:
         Predicate = self.Predicate
 
         class Fun:
-
             def __init__(self):
                 self.calls = 0
 
@@ -264,19 +278,21 @@ class test_retry_over_time:
                     raise Predicate()
                 finally:
                     self.calls += 1
+
         fun = Fun()
 
-        assert retry_over_time(
-            fun, self.Predicate,
-            max_retries=None, errback=None, interval_max=14) == 42
+        assert retry_over_time(fun, self.Predicate, max_retries=None, errback=None, interval_max=14) == 42
         assert fun.calls == 11
 
 
-@pytest.mark.parametrize('obj,expected', [
-    (None, None),
-    (1, [1]),
-    ([1, 2, 3], [1, 2, 3]),
-])
+@pytest.mark.parametrize(
+    "obj,expected",
+    [
+        (None, None),
+        (1, [1]),
+        ([1, 2, 3], [1, 2, 3]),
+    ],
+)
 def test_maybe_list(obj, expected):
     assert maybe_list(obj) == expected
 
@@ -285,23 +301,23 @@ def test_fxrange__no_repeatlast():
     assert list(fxrange(1.0, 3.0, 1.0)) == [1.0, 2.0, 3.0]
 
 
-@pytest.mark.parametrize('args,expected', [
-    ((1.0, 3.0, 1.0, 30.0),
-     [1.0, 2.0, 3.0, 3.0, 3.0, 3.0,
-      3.0, 3.0, 3.0, 3.0, 3.0]),
-    ((1.0, None, 1.0, 30.0),
-     [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]),
-])
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        ((1.0, 3.0, 1.0, 30.0), [1.0, 2.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]),
+        ((1.0, None, 1.0, 30.0), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]),
+    ],
+)
 def test_fxrangemax(args, expected):
     assert list(fxrangemax(*args)) == expected
 
 
 def test_reprkwargs():
-    assert reprkwargs({'foo': 'bar', 1: 2, 'k': 'v'})
+    assert reprkwargs({"foo": "bar", 1: 2, "k": "v"})
 
 
 def test_reprcall():
-    assert reprcall('add', (2, 2), {'copy': True})
+    assert reprcall("add", (2, 2), {"copy": True})
 
 
 class test_accepts_arg:
@@ -309,13 +325,13 @@ class test_accepts_arg:
         pass
 
     def test_valid_argument(self):
-        assert accepts_argument(self.function, 'self')
-        assert accepts_argument(self.function, 'foo')
-        assert accepts_argument(self.function, 'baz')
+        assert accepts_argument(self.function, "self")
+        assert accepts_argument(self.function, "foo")
+        assert accepts_argument(self.function, "baz")
 
     def test_invalid_argument(self):
-        assert not accepts_argument(self.function, 'random_argument')
+        assert not accepts_argument(self.function, "random_argument")
 
     def test_raise_exception(self):
         with pytest.raises(Exception):
-            accepts_argument(None, 'foo')
+            accepts_argument(None, "foo")

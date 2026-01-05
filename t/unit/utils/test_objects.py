@@ -6,9 +6,7 @@ from kombu.utils.objects import cached_property
 
 
 class test_cached_property:
-
     def test_deleting(self):
-
         class X:
             xx = False
 
@@ -23,12 +21,11 @@ class test_cached_property:
         x = X()
         del x.foo
         assert not x.xx
-        x.__dict__['foo'] = 'here'
+        x.__dict__["foo"] = "here"
         del x.foo
-        assert x.xx == 'here'
+        assert x.xx == "here"
 
     def test_when_access_from_class(self):
-
         class X:
             xx = None
 
@@ -40,7 +37,7 @@ class test_cached_property:
             def foo(self, value):
                 self.xx = 10
 
-        desc = X.__dict__['foo']
+        desc = X.__dict__["foo"]
         assert X.foo is desc
 
         assert desc.__get__(None) is desc
@@ -55,7 +52,6 @@ class test_cached_property:
         del x.foo
 
     def test_locks_on_access(self):
-
         class X:
             @cached_property
             def foo(self):
@@ -65,20 +61,20 @@ class test_cached_property:
 
         # Getting the value acquires the lock, and may do so recursively
         # on Python < 3.12 because the superclass acquires it.
-        with mock.patch.object(X.foo, 'lock') as mock_lock:
+        with mock.patch.object(X.foo, "lock") as mock_lock:
             assert x.foo == 42
         mock_lock.__enter__.assert_called()
         mock_lock.__exit__.assert_called()
 
         # Setting a value also acquires the lock.
-        with mock.patch.object(X.foo, 'lock') as mock_lock:
+        with mock.patch.object(X.foo, "lock") as mock_lock:
             x.foo = 314
         assert x.foo == 314
         mock_lock.__enter__.assert_called_once()
         mock_lock.__exit__.assert_called_once()
 
         # .. as does clearing the cached value to recompute it.
-        with mock.patch.object(X.foo, 'lock') as mock_lock:
+        with mock.patch.object(X.foo, "lock") as mock_lock:
             del x.foo
         assert x.foo == 42
         mock_lock.__enter__.assert_called_once()

@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 
 
 def _redis_modules():
-
     class ConnectionError(Exception):
         pass
 
@@ -40,7 +39,7 @@ def _redis_modules():
     class ResponseError(Exception):
         pass
 
-    exceptions = types.ModuleType('redis.exceptions')
+    exceptions = types.ModuleType("redis.exceptions")
     exceptions.ConnectionError = ConnectionError
     exceptions.AuthenticationError = AuthenticationError
     exceptions.InvalidData = InvalidData
@@ -50,7 +49,7 @@ def _redis_modules():
     class Redis:
         pass
 
-    myredis = types.ModuleType('redis')
+    myredis = types.ModuleType("redis")
     myredis.exceptions = exceptions
     myredis.Redis = Redis
 
@@ -58,7 +57,6 @@ def _redis_modules():
 
 
 class _poll(eventio._select):
-
     def register(self, fd, flags):
         if flags & eventio.READ:
             self._rfd.add(fd)
@@ -73,10 +71,10 @@ class _poll(eventio._select):
 
 eventio.poll = _poll
 
-pytest.importorskip('redis')
+pytest.importorskip("redis")
 
 # must import after poller patch, pep8 complains
-from kombu.transport import redis  # noqa
+from kombu.transport import redis
 
 
 class ResponseError(Exception):
@@ -96,7 +94,7 @@ class Client:
         self.connection = self._sconnection(self)
 
     def bgsave(self):
-        self._called.append('BGSAVE')
+        self._called.append("BGSAVE")
         if self.bgsave_raises_ResponseError:
             raise ResponseError()
 
@@ -136,6 +134,7 @@ class Client:
 
     def srem(self, key, *args):
         self.sets.pop(key, None)
+
     zrem = srem
 
     def llen(self, key):
@@ -152,7 +151,7 @@ class Client:
         queues = list(queues)
         assert cmd == type
         self.connection._sock.data = []
-        if type == 'BRPOP':
+        if type == "BRPOP":
             timeout = queues.pop()
             item = self.brpop(queues, timeout)
             if item:
@@ -214,22 +213,21 @@ class Client:
             self._sock.data.append((cmd, args))
 
     def info(self):
-        return {'foo': 1}
+        return {"foo": 1}
 
     def pubsub(self, *args, **kwargs):
         connection = self.connection
 
         class ConnectionPool:
-
             def get_connection(self, *args, **kwargs):
                 return connection
+
         self.connection_pool = ConnectionPool()
 
         return self
 
 
 class Pipeline:
-
     def __init__(self, client):
         self.client = client
         self.stack = []
@@ -241,7 +239,7 @@ class Pipeline:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: TracebackType | None
+        exc_tb: TracebackType | None,
     ) -> None:
         pass
 
@@ -262,7 +260,6 @@ class Pipeline:
 
 
 class Channel(redis.Channel):
-
     def _get_client(self):
         return Client
 
@@ -287,22 +284,21 @@ class Transport(redis.Transport):
 
 
 class test_Channel:
-
     def setup_method(self):
         self.connection = self.create_connection()
         self.channel = self.connection.default_channel
 
     def create_connection(self, **kwargs):
-        kwargs.setdefault('transport_options', {'fanout_patterns': True})
+        kwargs.setdefault("transport_options", {"fanout_patterns": True})
         return Connection(transport=Transport, **kwargs)
 
-    def _get_one_delivery_tag(self, n='test_uniq_tag'):
+    def _get_one_delivery_tag(self, n="test_uniq_tag"):
         with self.create_connection() as conn1:
             chan = conn1.default_channel
             chan.exchange_declare(n)
             chan.queue_declare(n)
             chan.queue_bind(n, n, n)
-            msg = chan.prepare_message('quick brown fox')
+            msg = chan.prepare_message("quick brown fox")
             chan.basic_publish(msg, n, n)
             payload = chan._get(n)
             assert payload
@@ -320,21 +316,23 @@ class test_Channel:
             assert len(tag) == 36
 
     def test_disable_ack_emulation(self):
-        conn = Connection(transport=Transport, transport_options={
-            'ack_emulation': False,
-        })
+        conn = Connection(
+            transport=Transport,
+            transport_options={
+                "ack_emulation": False,
+            },
+        )
 
         chan = conn.channel()
         assert not chan.ack_emulation
         assert chan.QoS == virtual.QoS
 
     def test_redis_ping_raises(self):
-        pool = Mock(name='pool')
+        pool = Mock(name="pool")
         pool_at_init = [pool]
-        client = Mock(name='client')
+        client = Mock(name="client")
 
         class XChannel(Channel):
-
             def __init__(self, *args, **kwargs):
                 self._pool = pool_at_init[0]
                 super().__init__(*args, **kwargs)
@@ -346,7 +344,7 @@ class test_Channel:
             Channel = XChannel
 
         conn = Connection(transport=XTransport)
-        conn.transport.cycle = Mock(name='cycle')
+        conn.transport.cycle = Mock(name="cycle")
         client.ping.side_effect = RuntimeError()
         with pytest.raises(RuntimeError):
             conn.channel()
@@ -364,10 +362,10 @@ class test_Channel:
 
     def test_redis_connection_added_to_cycle_if_ping_succeeds(self):
         """Test should check the connection is added to the cycle only
-           if the ping to Redis was finished successfully."""
+        if the ping to Redis was finished successfully."""
         # given: mock pool and client
-        pool = Mock(name='pool')
-        client = Mock(name='client')
+        pool = Mock(name="pool")
+        client = Mock(name="client")
 
         # override channel class with given mocks
         class XChannel(Channel):
@@ -384,7 +382,7 @@ class test_Channel:
 
         # when: create connection with overridden transport
         conn = Connection(transport=XTransport)
-        conn.transport.cycle = Mock(name='cycle')
+        conn.transport.cycle = Mock(name="cycle")
         # create the channel
         chan = conn.channel()
         # then: check if ping was called
@@ -397,13 +395,10 @@ class test_Channel:
 
     def test_redis_on_disconnect_channel_only_if_was_registered(self):
         """Test should check if the _on_disconnect method is called only
-           if the channel was registered into the poller."""
+        if the channel was registered into the poller."""
         # given: mock pool and client
-        pool = Mock(name='pool')
-        client = Mock(
-            name='client',
-            ping=Mock(return_value=True)
-        )
+        pool = Mock(name="pool")
+        client = Mock(name="client", ping=Mock(return_value=True))
 
         # create RedisConnectionMock class
         # for the possibility to run disconnect method
@@ -429,18 +424,18 @@ class test_Channel:
                 self.on_disconect_count += 1
 
         # create the channel
-        chan = XChannel(Mock(
-            _used_channel_ids=[],
-            channel_max=1,
-            channels=[],
-            client=Mock(
-                transport_options={},
-                hostname="127.0.0.1",
-                virtual_host=None, credential_provider=None)))
+        chan = XChannel(
+            Mock(
+                _used_channel_ids=[],
+                channel_max=1,
+                channels=[],
+                client=Mock(transport_options={}, hostname="127.0.0.1", virtual_host=None, credential_provider=None),
+            ),
+        )
         # create the _connparams with overridden connection_class
         connparams = chan._connparams(asynchronous=True)
         # create redis.Connection
-        redis_connection = connparams['connection_class']()
+        redis_connection = connparams["connection_class"]()
         # the connection was added to the cycle
         chan.connection.cycle.add.assert_called_once()
         # and the ping was called
@@ -454,15 +449,13 @@ class test_Channel:
 
     def test_redis__on_disconnect_should_not_be_called_if_not_registered(self):
         """Test should check if the _on_disconnect method is not called because
-           the connection to Redis isn't established properly."""
+        the connection to Redis isn't established properly."""
         # given: mock pool
-        pool = Mock(name='pool')
+        pool = Mock(name="pool")
         # client mock with ping method which return ConnectionError
         from redis.exceptions import ConnectionError
-        client = Mock(
-            name='client',
-            ping=Mock(side_effect=ConnectionError())
-        )
+
+        client = Mock(name="client", ping=Mock(side_effect=ConnectionError()))
 
         # create RedisConnectionMock
         # for the possibility to run disconnect method
@@ -490,18 +483,18 @@ class test_Channel:
         # then: exception was risen
         with pytest.raises(ConnectionError):
             # when: create the channel
-            chan = XChannel(Mock(
-                _used_channel_ids=[],
-                channel_max=1,
-                channels=[],
-                client=Mock(
-                    transport_options={},
-                    hostname="127.0.0.1",
-                    virtual_host=None)))
+            chan = XChannel(
+                Mock(
+                    _used_channel_ids=[],
+                    channel_max=1,
+                    channels=[],
+                    client=Mock(transport_options={}, hostname="127.0.0.1", virtual_host=None),
+                ),
+            )
             # create the _connparams with overridden connection_class
             connparams = chan._connparams(asynchronous=True)
             # create redis.Connection
-            redis_connection = connparams['connection_class']()
+            redis_connection = connparams["connection_class"]()
             # the connection wasn't added to the cycle
             chan.connection.cycle.add.assert_not_called()
             # the ping was called once with the exception
@@ -517,11 +510,13 @@ class test_Channel:
         from redis.exceptions import ConnectionError
 
         from kombu.transport.redis import get_redis_ConnectionError
+
         connection_error = get_redis_ConnectionError()
         assert connection_error == ConnectionError
 
     def test_after_fork_cleanup_channel(self):
         from kombu.transport.redis import _after_fork_cleanup_channel
+
         channel = Mock()
         _after_fork_cleanup_channel(channel)
         channel._after_fork.assert_called_once()
@@ -530,57 +525,73 @@ class test_Channel:
         self.channel._pool = None
         self.channel._after_fork()
 
-        pool = self.channel._pool = Mock(name='pool')
+        pool = self.channel._pool = Mock(name="pool")
         self.channel._after_fork()
         pool.disconnect.assert_called_with()
 
     def test_next_delivery_tag(self):
-        assert (self.channel._next_delivery_tag() !=
-                self.channel._next_delivery_tag())
+        assert self.channel._next_delivery_tag() != self.channel._next_delivery_tag()
 
     def test_do_restore_message(self):
-        client = Mock(name='client')
-        pl1 = {'body': 'BODY'}
+        client = Mock(name="client")
+        pl1 = {"body": "BODY"}
         spl1 = dumps(pl1)
-        lookup = self.channel._lookup = Mock(name='_lookup')
-        lookup.return_value = {'george', 'elaine'}
+        lookup = self.channel._lookup = Mock(name="_lookup")
+        lookup.return_value = {"george", "elaine"}
         self.channel._do_restore_message(
-            pl1, 'ex', 'rkey', client,
+            pl1,
+            "ex",
+            "rkey",
+            client,
         )
-        client.rpush.assert_has_calls([
-            call('george', spl1), call('elaine', spl1),
-        ], any_order=True)
+        client.rpush.assert_has_calls(
+            [
+                call("george", spl1),
+                call("elaine", spl1),
+            ],
+            any_order=True,
+        )
 
-        client = Mock(name='client')
-        pl2 = {'body': 'BODY2', 'headers': {'x-funny': 1}}
-        headers_after = dict(pl2['headers'], redelivered=True)
+        client = Mock(name="client")
+        pl2 = {"body": "BODY2", "headers": {"x-funny": 1}}
+        headers_after = dict(pl2["headers"], redelivered=True)
         spl2 = dumps(dict(pl2, headers=headers_after))
         self.channel._do_restore_message(
-            pl2, 'ex', 'rkey', client,
+            pl2,
+            "ex",
+            "rkey",
+            client,
         )
-        client.rpush.assert_any_call('george', spl2)
-        client.rpush.assert_any_call('elaine', spl2)
+        client.rpush.assert_any_call("george", spl2)
+        client.rpush.assert_any_call("elaine", spl2)
 
         client.rpush.side_effect = KeyError()
-        with patch('kombu.transport.redis.crit') as crit:
+        with patch("kombu.transport.redis.crit") as crit:
             self.channel._do_restore_message(
-                pl2, 'ex', 'rkey', client,
+                pl2,
+                "ex",
+                "rkey",
+                client,
             )
             crit.assert_called()
 
     def test_do_restore_message_celery(self):
         # Payload value from real Celery project
         payload = {
-            "body": base64.b64encode(dumps([
-                [],
-                {},
-                {
-                    "callbacks": None,
-                    "errbacks": None,
-                    "chain": None,
-                    "chord": None,
-                },
-            ]).encode()).decode(),
+            "body": base64.b64encode(
+                dumps(
+                    [
+                        [],
+                        {},
+                        {
+                            "callbacks": None,
+                            "errbacks": None,
+                            "chain": None,
+                            "chord": None,
+                        },
+                    ],
+                ).encode(),
+            ).decode(),
             "content-encoding": "utf-8",
             "content-type": "application/json",
             "headers": {
@@ -615,78 +626,80 @@ class test_Channel:
             },
         }
         result_payload = copy.deepcopy(payload)
-        result_payload['headers']['redelivered'] = True
-        result_payload['properties']['delivery_info']['redelivered'] = True
-        queue = 'celery'
+        result_payload["headers"]["redelivered"] = True
+        result_payload["properties"]["delivery_info"]["redelivered"] = True
+        queue = "celery"
 
-        client = Mock(name='client')
-        lookup = self.channel._lookup = Mock(name='_lookup')
+        client = Mock(name="client")
+        lookup = self.channel._lookup = Mock(name="_lookup")
         lookup.return_value = [queue]
 
         self.channel._do_restore_message(
-            payload, 'exchange', 'routing_key', client,
+            payload,
+            "exchange",
+            "routing_key",
+            client,
         )
 
-        client.rpush.assert_called_with(self.channel._q_for_pri(queue, 3),
-                                        dumps(result_payload))
+        client.rpush.assert_called_with(self.channel._q_for_pri(queue, 3), dumps(result_payload))
 
     def test_restore_no_messages(self):
-        message = Mock(name='message')
+        message = Mock(name="message")
 
-        with patch('kombu.transport.redis.loads') as loads:
+        with patch("kombu.transport.redis.loads") as loads:
+
             def transaction_handler(restore_transaction, unacked_key):
                 assert unacked_key == self.channel.unacked_key
-                pipe = Mock(name='pipe')
+                pipe = Mock(name="pipe")
                 pipe.hget.return_value = None
 
                 restore_transaction(pipe)
 
                 pipe.multi.assert_called_once_with()
-                pipe.hdel.assert_called_once_with(
-                        unacked_key, message.delivery_tag)
+                pipe.hdel.assert_called_once_with(unacked_key, message.delivery_tag)
                 loads.assert_not_called()
 
-            client = self.channel._create_client = Mock(name='client')
+            client = self.channel._create_client = Mock(name="client")
             client = client()
             client.transaction.side_effect = transaction_handler
             self.channel._restore(message)
             client.transaction.assert_called()
 
     def test_restore_messages(self):
-        message = Mock(name='message')
+        message = Mock(name="message")
 
-        with patch('kombu.transport.redis.loads') as loads:
+        with patch("kombu.transport.redis.loads") as loads:
 
             def transaction_handler(restore_transaction, unacked_key):
                 assert unacked_key == self.channel.unacked_key
                 restore = self.channel._do_restore_message = Mock(
-                    name='_do_restore_message',
+                    name="_do_restore_message",
                 )
-                result = Mock(name='result')
-                loads.return_value = 'M', 'EX', 'RK'
-                pipe = Mock(name='pipe')
+                result = Mock(name="result")
+                loads.return_value = "M", "EX", "RK"
+                pipe = Mock(name="pipe")
                 pipe.hget.return_value = result
 
                 restore_transaction(pipe)
 
                 loads.assert_called_with(result)
                 pipe.multi.assert_called_once_with()
-                pipe.hdel.assert_called_once_with(
-                        unacked_key, message.delivery_tag)
+                pipe.hdel.assert_called_once_with(unacked_key, message.delivery_tag)
                 loads.assert_called()
-                restore.assert_called_with('M', 'EX', 'RK', pipe, False)
+                restore.assert_called_with("M", "EX", "RK", pipe, False)
 
-            client = self.channel._create_client = Mock(name='client')
+            client = self.channel._create_client = Mock(name="client")
             client = client()
             client.transaction.side_effect = transaction_handler
             self.channel._restore(message)
 
     def test_qos_restore_visible(self):
-        client = self.channel._create_client = Mock(name='client')
+        client = self.channel._create_client = Mock(name="client")
         client = client()
 
         def pipe(*args, **kwargs):
             return Pipeline(client)
+
         client.pipeline = pipe
         client.zrevrangebyscore.return_value = [
             (1, 10),
@@ -694,7 +707,7 @@ class test_Channel:
             (3, 30),
         ]
         qos = redis.QoS(self.channel)
-        restore = qos.restore_by_tag = Mock(name='restore_by_tag')
+        restore = qos.restore_by_tag = Mock(name="restore_by_tag")
         qos._vrestore_count = 1
         qos.restore_visible()
         client.zrevrangebyscore.assert_not_called()
@@ -702,9 +715,13 @@ class test_Channel:
 
         qos._vrestore_count = 0
         qos.restore_visible()
-        restore.assert_has_calls([
-            call(1, client), call(2, client), call(3, client),
-        ])
+        restore.assert_has_calls(
+            [
+                call(1, client),
+                call(2, client),
+                call(3, client),
+            ],
+        )
         assert qos._vrestore_count == 1
 
         qos._vrestore_count = 0
@@ -719,17 +736,17 @@ class test_Channel:
         qos.restore_visible()
 
     def test_basic_consume_when_fanout_queue(self):
-        self.channel.exchange_declare(exchange='txconfan', type='fanout')
-        self.channel.queue_declare(queue='txconfanq')
-        self.channel.queue_bind(queue='txconfanq', exchange='txconfan')
+        self.channel.exchange_declare(exchange="txconfan", type="fanout")
+        self.channel.queue_declare(queue="txconfanq")
+        self.channel.queue_bind(queue="txconfanq", exchange="txconfan")
 
-        assert 'txconfanq' in self.channel._fanout_queues
-        self.channel.basic_consume('txconfanq', False, None, 1)
-        assert 'txconfanq' in self.channel.active_fanout_queues
-        assert self.channel._fanout_to_queue.get('txconfan') == 'txconfanq'
+        assert "txconfanq" in self.channel._fanout_queues
+        self.channel.basic_consume("txconfanq", False, None, 1)
+        assert "txconfanq" in self.channel.active_fanout_queues
+        assert self.channel._fanout_to_queue.get("txconfan") == "txconfanq"
 
     def test_basic_cancel_unknown_delivery_tag(self):
-        assert self.channel.basic_cancel('txaseqwewq') is None
+        assert self.channel.basic_cancel("txaseqwewq") is None
 
     def test_subscribe_no_queues(self):
         self.channel.subclient = Mock()
@@ -739,14 +756,14 @@ class test_Channel:
 
     def test_subscribe(self):
         self.channel.subclient = Mock()
-        self.channel.active_fanout_queues.add('a')
-        self.channel.active_fanout_queues.add('b')
-        self.channel._fanout_queues.update(a=('a', ''), b=('b', ''))
+        self.channel.active_fanout_queues.add("a")
+        self.channel.active_fanout_queues.add("b")
+        self.channel._fanout_queues.update(a=("a", ""), b=("b", ""))
 
         self.channel._subscribe()
         self.channel.subclient.psubscribe.assert_called()
         s_args, _ = self.channel.subclient.psubscribe.call_args
-        assert sorted(s_args[0]) == ['/{db}.a', '/{db}.b']
+        assert sorted(s_args[0]) == ["/{db}.a", "/{db}.b"]
 
         self.channel.subclient.connection._sock = None
         self.channel._subscribe()
@@ -755,31 +772,31 @@ class test_Channel:
     def test_handle_unsubscribe_message(self):
         s = self.channel.subclient
         s.subscribed = True
-        self.channel._handle_message(s, ['unsubscribe', 'a', 0])
+        self.channel._handle_message(s, ["unsubscribe", "a", 0])
         assert not s.subscribed
 
     def test_handle_pmessage_message(self):
         res = self.channel._handle_message(
             self.channel.subclient,
-            ['pmessage', 'pattern', 'channel', 'data'],
+            ["pmessage", "pattern", "channel", "data"],
         )
         assert res == {
-            'type': 'pmessage',
-            'pattern': 'pattern',
-            'channel': 'channel',
-            'data': 'data',
+            "type": "pmessage",
+            "pattern": "pattern",
+            "channel": "channel",
+            "data": "data",
         }
 
     def test_handle_message(self):
         res = self.channel._handle_message(
             self.channel.subclient,
-            ['type', 'channel', 'data'],
+            ["type", "channel", "data"],
         )
         assert res == {
-            'type': 'type',
-            'pattern': None,
-            'channel': 'channel',
-            'data': 'data',
+            "type": "type",
+            "pattern": None,
+            "channel": "channel",
+            "data": "data",
         }
 
     def test_brpop_start_but_no_queues(self):
@@ -787,25 +804,26 @@ class test_Channel:
 
     def test_receive(self):
         s = self.channel.subclient = Mock()
-        self.channel._fanout_to_queue['a'] = 'b'
-        self.channel.connection._deliver = Mock(name='_deliver')
+        self.channel._fanout_to_queue["a"] = "b"
+        self.channel.connection._deliver = Mock(name="_deliver")
         message = {
-            'body': 'hello',
-            'properties': {
-                'delivery_tag': 1,
-                'delivery_info': {'exchange': 'E', 'routing_key': 'R'},
+            "body": "hello",
+            "properties": {
+                "delivery_tag": 1,
+                "delivery_info": {"exchange": "E", "routing_key": "R"},
             },
         }
-        s.parse_response.return_value = ['message', 'a', dumps(message)]
+        s.parse_response.return_value = ["message", "a", dumps(message)]
         self.channel._receive_one(self.channel.subclient)
         self.channel.connection._deliver.assert_called_once_with(
-            message, 'b',
+            message,
+            "b",
         )
 
     def test_receive_raises_for_connection_error(self):
         self.channel._in_listen = True
         s = self.channel.subclient = Mock()
-        s.parse_response.side_effect = KeyError('foo')
+        s.parse_response.side_effect = KeyError("foo")
 
         with pytest.raises(KeyError):
             self.channel._receive_one(self.channel.subclient)
@@ -819,13 +837,13 @@ class test_Channel:
 
     def test_receive_different_message_Type(self):
         s = self.channel.subclient = Mock()
-        s.parse_response.return_value = ['message', '/foo/', 0, 'data']
+        s.parse_response.return_value = ["message", "/foo/", 0, "data"]
 
         assert self.channel._receive_one(self.channel.subclient) is None
 
     def test_receive_invalid_response_type(self):
         s = self.channel.subclient = Mock()
-        for resp in ['foo', None]:
+        for resp in ["foo", None]:
             s.parse_response.return_value = resp
             assert self.channel._receive_one(self.channel.subclient) is None
 
@@ -843,7 +861,7 @@ class test_Channel:
 
     def test_brpop_read_raises(self):
         c = self.channel.client = Mock()
-        c.parse_response.side_effect = KeyError('foo')
+        c.parse_response.side_effect = KeyError("foo")
 
         with pytest.raises(KeyError):
             self.channel._brpop_read()
@@ -860,52 +878,55 @@ class test_Channel:
     def test_poll_error(self):
         c = self.channel.client = Mock()
         c.parse_response = Mock()
-        self.channel._poll_error('BRPOP')
+        self.channel._poll_error("BRPOP")
 
-        c.parse_response.assert_called_with(c.connection, 'BRPOP')
+        c.parse_response.assert_called_with(c.connection, "BRPOP")
 
-        c.parse_response.side_effect = KeyError('foo')
+        c.parse_response.side_effect = KeyError("foo")
         with pytest.raises(KeyError):
-            self.channel._poll_error('BRPOP')
+            self.channel._poll_error("BRPOP")
 
     def test_poll_error_on_type_LISTEN(self):
         c = self.channel.subclient = Mock()
         c.parse_response = Mock()
-        self.channel._poll_error('LISTEN')
+        self.channel._poll_error("LISTEN")
 
         c.parse_response.assert_called_with()
 
-        c.parse_response.side_effect = KeyError('foo')
+        c.parse_response.side_effect = KeyError("foo")
         with pytest.raises(KeyError):
-            self.channel._poll_error('LISTEN')
+            self.channel._poll_error("LISTEN")
 
     def test_put_fanout(self):
         self.channel._in_poll = False
         c = self.channel._create_client = Mock()
 
-        body = {'hello': 'world'}
-        self.channel._put_fanout('exchange', body, '')
-        c().publish.assert_called_with('/{db}.exchange', dumps(body))
+        body = {"hello": "world"}
+        self.channel._put_fanout("exchange", body, "")
+        c().publish.assert_called_with("/{db}.exchange", dumps(body))
 
     def test_put_priority(self):
-        client = self.channel._create_client = Mock(name='client')
-        msg1 = {'properties': {'priority': 3}}
+        client = self.channel._create_client = Mock(name="client")
+        msg1 = {"properties": {"priority": 3}}
 
-        self.channel._put('george', msg1)
+        self.channel._put("george", msg1)
         client().lpush.assert_called_with(
-            self.channel._q_for_pri('george', 3), dumps(msg1),
+            self.channel._q_for_pri("george", 3),
+            dumps(msg1),
         )
 
-        msg2 = {'properties': {'priority': 313}}
-        self.channel._put('george', msg2)
+        msg2 = {"properties": {"priority": 313}}
+        self.channel._put("george", msg2)
         client().lpush.assert_called_with(
-            self.channel._q_for_pri('george', 9), dumps(msg2),
+            self.channel._q_for_pri("george", 9),
+            dumps(msg2),
         )
 
-        msg3 = {'properties': {}}
-        self.channel._put('george', msg3)
+        msg3 = {"properties": {}}
+        self.channel._put("george", msg3)
         client().lpush.assert_called_with(
-            self.channel._q_for_pri('george', 0), dumps(msg3),
+            self.channel._q_for_pri("george", 0),
+            dumps(msg3),
         )
 
     def test_delete(self):
@@ -915,41 +936,37 @@ class test_Channel:
         delete = x.client.delete = Mock()
         srem = x.client.srem = Mock()
 
-        x._delete('queue', 'exchange', 'routing_key', None)
-        delete.assert_has_calls([
-            call(x._q_for_pri('queue', pri)) for pri in redis.PRIORITY_STEPS
-        ])
-        srem.assert_called_with(x.keyprefix_queue % ('exchange',),
-                                x.sep.join(['routing_key', '', 'queue']))
+        x._delete("queue", "exchange", "routing_key", None)
+        delete.assert_has_calls([call(x._q_for_pri("queue", pri)) for pri in redis.PRIORITY_STEPS])
+        srem.assert_called_with(x.keyprefix_queue % ("exchange",), x.sep.join(["routing_key", "", "queue"]))
 
     def test_has_queue(self):
         self.channel._create_client = Mock()
         self.channel._create_client.return_value = self.channel.client
         exists = self.channel.client.exists = Mock()
         exists.return_value = True
-        assert self.channel._has_queue('foo')
-        exists.assert_has_calls([
-            call(self.channel._q_for_pri('foo', pri))
-            for pri in redis.PRIORITY_STEPS
-        ])
+        assert self.channel._has_queue("foo")
+        exists.assert_has_calls([call(self.channel._q_for_pri("foo", pri)) for pri in redis.PRIORITY_STEPS])
 
         exists.return_value = False
-        assert not self.channel._has_queue('foo')
+        assert not self.channel._has_queue("foo")
 
     def test_close_when_closed(self):
         self.channel.closed = True
         self.channel.close()
 
     def test_close_deletes_autodelete_fanout_queues(self):
-        self.channel._fanout_queues = {'foo': ('foo', ''), 'bar': ('bar', '')}
-        self.channel.auto_delete_queues = ['foo']
-        self.channel.queue_delete = Mock(name='queue_delete')
+        self.channel._fanout_queues = {"foo": ("foo", ""), "bar": ("bar", "")}
+        self.channel.auto_delete_queues = ["foo"]
+        self.channel.queue_delete = Mock(name="queue_delete")
 
         client = self.channel.client
         self.channel.close()
-        self.channel.queue_delete.assert_has_calls([
-            call('foo', client=client),
-        ])
+        self.channel.queue_delete.assert_has_calls(
+            [
+                call("foo", client=client),
+            ],
+        )
 
     def test_close_client_close_raises(self):
         c = self.channel.client = Mock()
@@ -960,16 +977,12 @@ class test_Channel:
         connection.disconnect.assert_called_with()
 
     def test_invalid_database_raises_ValueError(self):
-
         with pytest.raises(ValueError):
-            self.channel.connection.client.virtual_host = 'dwqeq'
+            self.channel.connection.client.virtual_host = "dwqeq"
             self.channel._connparams()
 
     def test_process_credential_provider(self):
-        connparams = {
-            "username": "test",
-            "password": "test"
-        }
+        connparams = {"username": "test", "password": "test"}
         credential_provider = "redis.CredentialProvider"
         self.channel._process_credential_provider(credential_provider, connparams)
         assert "username" not in connparams
@@ -990,54 +1003,53 @@ class test_Channel:
         class MockCredentialProvider:
             pass
 
-        with patch('kombu.transport.redis.CredentialProvider', new=MockCredentialProvider):
+        with patch("kombu.transport.redis.CredentialProvider", new=MockCredentialProvider):
             provider = MockCredentialProvider()
             connparams = {"username": "test", "password": "test"}
             self.channel._process_credential_provider(provider, connparams)
-            assert connparams['credential_provider'] is provider
+            assert connparams["credential_provider"] is provider
             assert "username" not in connparams
 
     def test_connparams_allows_slash_in_db(self):
-        self.channel.connection.client.virtual_host = '/123'
-        assert self.channel._connparams()['db'] == 123
+        self.channel.connection.client.virtual_host = "/123"
+        assert self.channel._connparams()["db"] == 123
 
     def test_connparams_db_can_be_int(self):
         self.channel.connection.client.virtual_host = 124
-        assert self.channel._connparams()['db'] == 124
+        assert self.channel._connparams()["db"] == 124
 
     def test_new_queue_with_auto_delete(self):
-        redis.Channel._new_queue(self.channel, 'george', auto_delete=False)
-        assert 'george' not in self.channel.auto_delete_queues
-        redis.Channel._new_queue(self.channel, 'elaine', auto_delete=True)
-        assert 'elaine' in self.channel.auto_delete_queues
+        redis.Channel._new_queue(self.channel, "george", auto_delete=False)
+        assert "george" not in self.channel.auto_delete_queues
+        redis.Channel._new_queue(self.channel, "elaine", auto_delete=True)
+        assert "elaine" in self.channel.auto_delete_queues
 
     def test_connparams_regular_hostname(self):
-        self.channel.connection.client.hostname = 'george.vandelay.com'
-        assert self.channel._connparams()['host'] == 'george.vandelay.com'
+        self.channel.connection.client.hostname = "george.vandelay.com"
+        assert self.channel._connparams()["host"] == "george.vandelay.com"
 
     def test_connparams_username(self):
-        self.channel.connection.client.userid = 'kombu'
-        assert self.channel._connparams()['username'] == 'kombu'
+        self.channel.connection.client.userid = "kombu"
+        assert self.channel._connparams()["username"] == "kombu"
 
     def test_connparams_client_credentials(self):
-        self.channel.connection.client.hostname = \
-            'redis://foo:bar@127.0.0.1:6379/0'
+        self.channel.connection.client.hostname = "redis://foo:bar@127.0.0.1:6379/0"
         connection_parameters = self.channel._connparams()
 
-        assert connection_parameters['username'] == 'foo'
-        assert connection_parameters['password'] == 'bar'
+        assert connection_parameters["username"] == "foo"
+        assert connection_parameters["password"] == "bar"
 
     def test_connparams_no_credential_provider(self):
         self.channel.connection.client.credential_provider = None
         connection_parameters = self.channel._connparams()
-        assert 'credential_provider' not in connection_parameters
+        assert "credential_provider" not in connection_parameters
 
     def test_connparams_client_credentials_with_credential_provider_as_kwargs(self):
         self.channel.connection.client.credential_provider = redis.CredentialProvider()
         connection_parameters = self.channel._connparams()
-        assert 'username' not in connection_parameters
-        assert 'password' not in connection_parameters
-        assert 'credential_provider' in connection_parameters
+        assert "username" not in connection_parameters
+        assert "password" not in connection_parameters
+        assert "credential_provider" in connection_parameters
 
         # test for non existent cred provider
         self.channel.connection.client.credential_provider = "not_exist.CredentialProvider"
@@ -1047,59 +1059,58 @@ class test_Channel:
         # check for ValueError when credential provider is not a subclass of CredentialProvider
         class NonCredentialProvider:
             pass
+
         self.channel.connection.client.credential_provider = NonCredentialProvider()
         with pytest.raises(ValueError):
             self.channel._connparams()
 
     def test_connparams_client_credentials_with_credential_provider_as_query_param(self):
-        self.channel.connection.client.hostname = \
-            'redis://foo:bar@127.0.0.1:6379/0?credential_provider=redis.CredentialProvider'
+        self.channel.connection.client.hostname = (
+            "redis://foo:bar@127.0.0.1:6379/0?credential_provider=redis.CredentialProvider"
+        )
         connection_parameters = self.channel._connparams()
 
-        assert 'username' not in connection_parameters
-        assert 'password' not in connection_parameters
-        assert 'credential_provider' in connection_parameters
+        assert "username" not in connection_parameters
+        assert "password" not in connection_parameters
+        assert "credential_provider" in connection_parameters
 
-        self.channel.connection.client.hostname = \
-            'redis://foo:bar@127.0.0.1:6379/0?credential_provider=nonexit.CredentialProvider'
+        self.channel.connection.client.hostname = (
+            "redis://foo:bar@127.0.0.1:6379/0?credential_provider=nonexit.CredentialProvider"
+        )
 
         with pytest.raises(ImportError):
             self.channel._connparams()
 
         # check for ValueError when credential provider is not a subclass of CredentialProvider
-        self.channel.connection.client.hostname = \
-            'redis://foo:bar@127.0.0.1:6379/0?credential_provider=abc.ABC'
+        self.channel.connection.client.hostname = "redis://foo:bar@127.0.0.1:6379/0?credential_provider=abc.ABC"
 
         with pytest.raises(ValueError):
             self.channel._connparams()
 
     def test_connparams_password_for_unix_socket(self):
-        self.channel.connection.client.hostname = \
-            'socket://:foo@/var/run/redis.sock'
+        self.channel.connection.client.hostname = "socket://:foo@/var/run/redis.sock"
         connection_parameters = self.channel._connparams()
-        password = connection_parameters['password']
-        path = connection_parameters['path']
-        assert (password, path) == ('foo', '/var/run/redis.sock')
-        self.channel.connection.client.hostname = \
-            'socket://@/var/run/redis.sock'
+        password = connection_parameters["password"]
+        path = connection_parameters["path"]
+        assert (password, path) == ("foo", "/var/run/redis.sock")
+        self.channel.connection.client.hostname = "socket://@/var/run/redis.sock"
         connection_parameters = self.channel._connparams()
-        password = connection_parameters['password']
-        path = connection_parameters['path']
-        assert (password, path) == (None, '/var/run/redis.sock')
+        password = connection_parameters["password"]
+        path = connection_parameters["path"]
+        assert (password, path) == (None, "/var/run/redis.sock")
 
     def test_connparams_health_check_interval_not_supported(self):
-        with patch('kombu.transport.redis.Channel._create_client'):
-            with Connection('redis+socket:///tmp/redis.sock') as conn:
-                conn.default_channel.connection_class = \
-                    Mock(name='connection_class')
+        with patch("kombu.transport.redis.Channel._create_client"):
+            with Connection("redis+socket:///tmp/redis.sock") as conn:
+                conn.default_channel.connection_class = Mock(name="connection_class")
                 connparams = conn.default_channel._connparams()
-                assert 'health_check_interval' not in connparams
+                assert "health_check_interval" not in connparams
 
     def test_connparams_health_check_interval_supported(self):
-        with patch('kombu.transport.redis.Channel._create_client'):
-            with Connection('redis+socket:///tmp/redis.sock') as conn:
+        with patch("kombu.transport.redis.Channel._create_client"):
+            with Connection("redis+socket:///tmp/redis.sock") as conn:
                 connparams = conn.default_channel._connparams()
-                assert connparams['health_check_interval'] == 25
+                assert connparams["health_check_interval"] == 25
 
     def test_connparams_includes_client_name_from_transport_options(self):
         # Ensure that when client_name is provided via transport options,
@@ -1107,24 +1118,25 @@ class test_Channel:
         # the Redis connection/pool.
         with Connection(
             transport=Transport,
-            transport_options={'client_name': 'kombu-worker'},
+            transport_options={"client_name": "kombu-worker"},
         ) as conn:
             params = conn.default_channel._connparams()
-            assert params['client_name'] == 'kombu-worker'
+            assert params["client_name"] == "kombu-worker"
 
     def test_rotate_cycle_ValueError(self):
         cycle = self.channel._queue_cycle
-        cycle.update(['kramer', 'jerry'])
-        cycle.rotate('kramer')
-        assert cycle.items, ['jerry' == 'kramer']
-        cycle.rotate('elaine')
+        cycle.update(["kramer", "jerry"])
+        cycle.rotate("kramer")
+        assert cycle.items, ["jerry" == "kramer"]
+        cycle.rotate("elaine")
 
     def test_get_client(self):
         import redis as R
+
         KombuRedis = redis.Channel._get_client(self.channel)
         assert isinstance(KombuRedis(), R.StrictRedis)
 
-        Rv = getattr(R, 'VERSION', None)
+        Rv = getattr(R, "VERSION", None)
         try:
             R.VERSION = (2, 4, 0)
             with pytest.raises(VersionMismatch):
@@ -1135,12 +1147,14 @@ class test_Channel:
 
     def test_get_prefixed_client(self):
         from kombu.transport.redis import PrefixedStrictRedis
+
         self.channel.global_keyprefix = "test_"
         PrefixedRedis = redis.Channel._get_client(self.channel)
         assert isinstance(PrefixedRedis(), PrefixedStrictRedis)
 
     def test_get_response_error(self):
         from redis.exceptions import ResponseError
+
         assert redis.Channel._get_response_error(self.channel) is ResponseError
 
     def test_avail_client(self):
@@ -1152,37 +1166,41 @@ class test_Channel:
 
     def test_register_with_event_loop(self):
         transport = self.connection.transport
-        transport.cycle = Mock(name='cycle')
-        transport.cycle.fds = {12: 'LISTEN', 13: 'BRPOP'}
-        conn = Mock(name='conn')
-        conn.client = Mock(name='client', transport_options={})
-        loop = Mock(name='loop')
+        transport.cycle = Mock(name="cycle")
+        transport.cycle.fds = {12: "LISTEN", 13: "BRPOP"}
+        conn = Mock(name="conn")
+        conn.client = Mock(name="client", transport_options={})
+        loop = Mock(name="loop")
         redis.Transport.register_with_event_loop(transport, conn, loop)
         transport.cycle.on_poll_init.assert_called_with(loop.poller)
-        loop.call_repeatedly.assert_has_calls([
-            call(10, transport.cycle.maybe_restore_messages),
-            call(25, transport.cycle.maybe_check_subclient_health),
-        ])
+        loop.call_repeatedly.assert_has_calls(
+            [
+                call(10, transport.cycle.maybe_restore_messages),
+                call(25, transport.cycle.maybe_check_subclient_health),
+            ],
+        )
         loop.on_tick.add.assert_called()
         on_poll_start = loop.on_tick.add.call_args[0][0]
 
         on_poll_start()
         transport.cycle.on_poll_start.assert_called_with()
-        loop.add_reader.assert_has_calls([
-            call(12, transport.on_readable, 12),
-            call(13, transport.on_readable, 13),
-        ])
+        loop.add_reader.assert_has_calls(
+            [
+                call(12, transport.on_readable, 12),
+                call(13, transport.on_readable, 13),
+            ],
+        )
 
-    @pytest.mark.parametrize('fds', [{12: 'LISTEN', 13: 'BRPOP'}, {}])
+    @pytest.mark.parametrize("fds", [{12: "LISTEN", 13: "BRPOP"}, {}])
     def test_register_with_event_loop__on_disconnect__loop_cleanup(self, fds):
         """Ensure event loop polling stops on disconnect (if started)."""
         transport = self.connection.transport
         self.connection._sock = None
-        transport.cycle = Mock(name='cycle')
+        transport.cycle = Mock(name="cycle")
         transport.cycle.fds = fds
-        conn = Mock(name='conn')
-        conn.client = Mock(name='client', transport_options={})
-        loop = Mock(name='loop')
+        conn = Mock(name="conn")
+        conn.client = Mock(name="client", transport_options={})
+        loop = Mock(name="loop")
         loop.on_tick = set()
         redis.Transport.register_with_event_loop(transport, conn, loop)
         assert len(loop.on_tick) == 1
@@ -1195,32 +1213,39 @@ class test_Channel:
 
     def test_configurable_health_check(self):
         transport = self.connection.transport
-        transport.cycle = Mock(name='cycle')
-        transport.cycle.fds = {12: 'LISTEN', 13: 'BRPOP'}
-        conn = Mock(name='conn')
-        conn.client = Mock(name='client', transport_options={
-            'health_check_interval': 15,
-        })
-        loop = Mock(name='loop')
+        transport.cycle = Mock(name="cycle")
+        transport.cycle.fds = {12: "LISTEN", 13: "BRPOP"}
+        conn = Mock(name="conn")
+        conn.client = Mock(
+            name="client",
+            transport_options={
+                "health_check_interval": 15,
+            },
+        )
+        loop = Mock(name="loop")
         redis.Transport.register_with_event_loop(transport, conn, loop)
         transport.cycle.on_poll_init.assert_called_with(loop.poller)
-        loop.call_repeatedly.assert_has_calls([
-            call(10, transport.cycle.maybe_restore_messages),
-            call(15, transport.cycle.maybe_check_subclient_health),
-        ])
+        loop.call_repeatedly.assert_has_calls(
+            [
+                call(10, transport.cycle.maybe_restore_messages),
+                call(15, transport.cycle.maybe_check_subclient_health),
+            ],
+        )
         loop.on_tick.add.assert_called()
         on_poll_start = loop.on_tick.add.call_args[0][0]
 
         on_poll_start()
         transport.cycle.on_poll_start.assert_called_with()
-        loop.add_reader.assert_has_calls([
-            call(12, transport.on_readable, 12),
-            call(13, transport.on_readable, 13),
-        ])
+        loop.add_reader.assert_has_calls(
+            [
+                call(12, transport.on_readable, 12),
+                call(13, transport.on_readable, 13),
+            ],
+        )
 
     def test_transport_on_readable(self):
         transport = self.connection.transport
-        cycle = transport.cycle = Mock(name='cyle')
+        cycle = transport.cycle = Mock(name="cyle")
         cycle.on_readable.return_value = None
 
         redis.Transport.on_readable(transport, 13)
@@ -1245,8 +1270,8 @@ class test_Channel:
         class ID(Exception):
             pass
 
-        DataError = getattr(exceptions, 'DataError', None)
-        InvalidData = getattr(exceptions, 'InvalidData', None)
+        DataError = getattr(exceptions, "DataError", None)
+        InvalidData = getattr(exceptions, "InvalidData", None)
         exceptions.InvalidData = ID
         exceptions.DataError = None
         try:
@@ -1262,12 +1287,12 @@ class test_Channel:
     def test_empty_queues_key(self):
         channel = self.channel
         channel._in_poll = False
-        key = channel.keyprefix_queue % 'celery'
+        key = channel.keyprefix_queue % "celery"
 
         # Everything is fine, there is a list of queues.
-        channel.client.sadd(key, 'celery\x06\x16\x06\x16celery')
-        assert channel.get_table('celery') == [
-            ('celery', '', 'celery'),
+        channel.client.sadd(key, "celery\x06\x16\x06\x16celery")
+        assert channel.get_table("celery") == [
+            ("celery", "", "celery"),
         ]
 
         # Remove one last queue from exchange. After this call no queue
@@ -1275,63 +1300,65 @@ class test_Channel:
         channel.client.srem(key)
 
         # get_table() should return empty list of queues
-        assert self.channel.get_table('celery') == []
+        assert self.channel.get_table("celery") == []
 
     def test_socket_connection(self):
-        with patch('kombu.transport.redis.Channel._create_client'):
-            with Connection('redis+socket:///tmp/redis.sock') as conn:
+        with patch("kombu.transport.redis.Channel._create_client"):
+            with Connection("redis+socket:///tmp/redis.sock") as conn:
                 connparams = conn.default_channel._connparams()
                 assert issubclass(
-                    connparams['connection_class'],
+                    connparams["connection_class"],
                     redis.redis.UnixDomainSocketConnection,
                 )
-                assert connparams['path'] == '/tmp/redis.sock'
+                assert connparams["path"] == "/tmp/redis.sock"
 
     def test_ssl_argument__dict(self):
-        with patch('kombu.transport.redis.Channel._create_client'):
+        with patch("kombu.transport.redis.Channel._create_client"):
             # Expected format for redis-py's SSLConnection class
             ssl_params = {
-                'ssl_cert_reqs': 2,
-                'ssl_ca_certs': '/foo/ca.pem',
-                'ssl_certfile': '/foo/cert.crt',
-                'ssl_keyfile': '/foo/pkey.key'
+                "ssl_cert_reqs": 2,
+                "ssl_ca_certs": "/foo/ca.pem",
+                "ssl_certfile": "/foo/cert.crt",
+                "ssl_keyfile": "/foo/pkey.key",
             }
-            with Connection('redis://', ssl=ssl_params) as conn:
+            with Connection("redis://", ssl=ssl_params) as conn:
                 params = conn.default_channel._connparams()
-                assert params['ssl_cert_reqs'] == ssl_params['ssl_cert_reqs']
-                assert params['ssl_ca_certs'] == ssl_params['ssl_ca_certs']
-                assert params['ssl_certfile'] == ssl_params['ssl_certfile']
-                assert params['ssl_keyfile'] == ssl_params['ssl_keyfile']
-                assert params.get('ssl') is None
+                assert params["ssl_cert_reqs"] == ssl_params["ssl_cert_reqs"]
+                assert params["ssl_ca_certs"] == ssl_params["ssl_ca_certs"]
+                assert params["ssl_certfile"] == ssl_params["ssl_certfile"]
+                assert params["ssl_keyfile"] == ssl_params["ssl_keyfile"]
+                assert params.get("ssl") is None
 
     def test_ssl_connection(self):
-        with patch('kombu.transport.redis.Channel._create_client'):
-            with Connection('redis://', ssl={'ssl_cert_reqs': 2}) as conn:
+        with patch("kombu.transport.redis.Channel._create_client"):
+            with Connection("redis://", ssl={"ssl_cert_reqs": 2}) as conn:
                 connparams = conn.default_channel._connparams()
                 assert issubclass(
-                    connparams['connection_class'],
+                    connparams["connection_class"],
                     redis.redis.SSLConnection,
                 )
 
     def test_rediss_connection(self):
-        with patch('kombu.transport.redis.Channel._create_client'):
-            with Connection('rediss://') as conn:
-                connparams = conn.default_channel._connparams()
-                assert issubclass(
-                    connparams['connection_class'],
-                    redis.redis.SSLConnection,
-                )
+        with patch("kombu.transport.redis.Channel._create_client"), Connection("rediss://") as conn:
+            connparams = conn.default_channel._connparams()
+            assert issubclass(
+                connparams["connection_class"],
+                redis.redis.SSLConnection,
+            )
 
     def test_sep_transport_option(self):
-        with Connection(transport=Transport, transport_options={
-            'sep': ':',
-        }) as conn:
-            key = conn.default_channel.keyprefix_queue % 'celery'
-            conn.default_channel.client.sadd(key, 'celery::celery')
+        with Connection(
+            transport=Transport,
+            transport_options={
+                "sep": ":",
+            },
+        ) as conn:
+            key = conn.default_channel.keyprefix_queue % "celery"
+            conn.default_channel.client.sadd(key, "celery::celery")
 
-            assert conn.default_channel.sep == ':'
-            assert conn.default_channel.get_table('celery') == [
-                ('celery', '', 'celery'),
+            assert conn.default_channel.sep == ":"
+            assert conn.default_channel.get_table("celery") == [
+                ("celery", "", "celery"),
             ]
 
     @patch("redis.StrictRedis.execute_command")
@@ -1339,56 +1366,48 @@ class test_Channel:
         from kombu.transport.redis import PrefixedStrictRedis
 
         with Connection(transport=Transport) as conn:
-            client = PrefixedStrictRedis(global_keyprefix='foo_')
+            client = PrefixedStrictRedis(global_keyprefix="foo_")
 
             channel = conn.channel()
             channel._create_client = Mock()
             channel._create_client.return_value = client
 
-            body = {'hello': 'world'}
-            channel._put_fanout('exchange', body, '')
-            mock_execute_command.assert_called_with(
-                'PUBLISH',
-                'foo_/{db}.exchange',
-                dumps(body)
-            )
+            body = {"hello": "world"}
+            channel._put_fanout("exchange", body, "")
+            mock_execute_command.assert_called_with("PUBLISH", "foo_/{db}.exchange", dumps(body))
 
     @patch("redis.StrictRedis.execute_command")
     def test_global_keyprefix_queue_bind(self, mock_execute_command):
         from kombu.transport.redis import PrefixedStrictRedis
 
         with Connection(transport=Transport) as conn:
-            client = PrefixedStrictRedis(global_keyprefix='foo_')
+            client = PrefixedStrictRedis(global_keyprefix="foo_")
 
             channel = conn.channel()
             channel._create_client = Mock()
             channel._create_client.return_value = client
 
-            channel._queue_bind('default', '', None, 'queue')
-            mock_execute_command.assert_called_with(
-                'SADD',
-                'foo__kombu.binding.default',
-                '\x06\x16\x06\x16queue'
-            )
+            channel._queue_bind("default", "", None, "queue")
+            mock_execute_command.assert_called_with("SADD", "foo__kombu.binding.default", "\x06\x16\x06\x16queue")
 
     @patch("redis.client.PubSub.execute_command")
     def test_global_keyprefix_pubsub(self, mock_execute_command):
         from kombu.transport.redis import PrefixedStrictRedis
 
         with Connection(transport=Transport) as conn:
-            client = PrefixedStrictRedis(global_keyprefix='foo_')
+            client = PrefixedStrictRedis(global_keyprefix="foo_")
 
             channel = conn.channel()
-            channel.global_keyprefix = 'foo_'
+            channel.global_keyprefix = "foo_"
             channel._create_client = Mock()
             channel._create_client.return_value = client
             channel.subclient.connection = Mock()
-            channel.active_fanout_queues.add('a')
+            channel.active_fanout_queues.add("a")
 
             channel._subscribe()
             mock_execute_command.assert_called_with(
-                'PSUBSCRIBE',
-                'foo_/{db}.a',
+                "PSUBSCRIBE",
+                "foo_/{db}.a",
             )
 
     @patch("redis.client.Pipeline.execute_command")
@@ -1396,16 +1415,13 @@ class test_Channel:
         from kombu.transport.redis import PrefixedStrictRedis
 
         with Connection(transport=Transport) as conn:
+
             def pipeline(transaction=True, shard_hint=None):
-                pipeline_obj = original_pipeline(
-                    transaction=transaction, shard_hint=shard_hint
-                )
-                mock_execute_command.side_effect = [
-                    None, None, pipeline_obj, pipeline_obj
-                ]
+                pipeline_obj = original_pipeline(transaction=transaction, shard_hint=shard_hint)
+                mock_execute_command.side_effect = [None, None, pipeline_obj, pipeline_obj]
                 return pipeline_obj
 
-            client = PrefixedStrictRedis(global_keyprefix='foo_')
+            client = PrefixedStrictRedis(global_keyprefix="foo_")
             original_pipeline = client.pipeline
             client.pipeline = pipeline
 
@@ -1413,7 +1429,7 @@ class test_Channel:
             channel._create_client = Mock()
             channel._create_client.return_value = client
 
-            channel.qos.restore_by_tag('test-tag')
+            channel.qos.restore_by_tag("test-tag")
             assert mock_execute_command is not None
             # https://github.com/redis/redis-py/pull/3038 (redis>=5.1.0a1)
             # adds keyword argument `keys` to redis client.
@@ -1421,45 +1437,44 @@ class test_Channel:
             # take into account only `call.args`.
             call_args = [call.args for call in mock_execute_command.mock_calls]
             assert call_args == [
-                ('WATCH', 'foo_unacked'),
-                ('HGET', 'foo_unacked', 'test-tag'),
-                ('ZREM', 'foo_unacked_index', 'test-tag'),
-                ('HDEL', 'foo_unacked', 'test-tag')
+                ("WATCH", "foo_unacked"),
+                ("HGET", "foo_unacked", "test-tag"),
+                ("ZREM", "foo_unacked_index", "test-tag"),
+                ("HDEL", "foo_unacked", "test-tag"),
             ]
 
 
 class test_Redis:
-
     def setup_method(self):
         self.connection = Connection(transport=Transport)
-        self.exchange = Exchange('test_Redis', type='direct')
-        self.queue = Queue('test_Redis', self.exchange, 'test_Redis')
+        self.exchange = Exchange("test_Redis", type="direct")
+        self.queue = Queue("test_Redis", self.exchange, "test_Redis")
 
     def teardown_method(self):
         self.connection.close()
 
-    @pytest.mark.replace_module_value(redis.redis, 'VERSION', [3, 0, 0])
+    @pytest.mark.replace_module_value(redis.redis, "VERSION", [3, 0, 0])
     def test_publish__get_redispyv3(self, replace_module_value):
         channel = self.connection.channel()
-        producer = Producer(channel, self.exchange, routing_key='test_Redis')
+        producer = Producer(channel, self.exchange, routing_key="test_Redis")
         self.queue(channel).declare()
 
-        producer.publish({'hello': 'world'})
+        producer.publish({"hello": "world"})
 
-        assert self.queue(channel).get().payload == {'hello': 'world'}
+        assert self.queue(channel).get().payload == {"hello": "world"}
         assert self.queue(channel).get() is None
         assert self.queue(channel).get() is None
         assert self.queue(channel).get() is None
 
-    @pytest.mark.replace_module_value(redis.redis, 'VERSION', [2, 5, 10])
+    @pytest.mark.replace_module_value(redis.redis, "VERSION", [2, 5, 10])
     def test_publish__get_redispyv2(self, replace_module_value):
         channel = self.connection.channel()
-        producer = Producer(channel, self.exchange, routing_key='test_Redis')
+        producer = Producer(channel, self.exchange, routing_key="test_Redis")
         self.queue(channel).declare()
 
-        producer.publish({'hello': 'world'})
+        producer.publish({"hello": "world"})
 
-        assert self.queue(channel).get().payload == {'hello': 'world'}
+        assert self.queue(channel).get().payload == {"hello": "world"}
         assert self.queue(channel).get() is None
         assert self.queue(channel).get() is None
         assert self.queue(channel).get() is None
@@ -1467,10 +1482,10 @@ class test_Redis:
     def test_publish__consume(self):
         connection = Connection(transport=Transport)
         channel = connection.channel()
-        producer = Producer(channel, self.exchange, routing_key='test_Redis')
+        producer = Producer(channel, self.exchange, routing_key="test_Redis")
         consumer = Consumer(channel, queues=[self.queue])
 
-        producer.publish({'hello2': 'world2'})
+        producer.publish({"hello2": "world2"})
         _received = []
 
         def callback(message_data, message):
@@ -1491,28 +1506,25 @@ class test_Redis:
 
     def test_purge(self):
         channel = self.connection.channel()
-        producer = Producer(channel, self.exchange, routing_key='test_Redis')
+        producer = Producer(channel, self.exchange, routing_key="test_Redis")
         self.queue(channel).declare()
 
         for i in range(10):
-            producer.publish({'hello': f'world-{i}'})
+            producer.publish({"hello": f"world-{i}"})
 
-        assert channel._size('test_Redis') == 10
+        assert channel._size("test_Redis") == 10
         assert self.queue(channel).purge() == 10
         channel.close()
 
     def test_db_values(self):
-        Connection(virtual_host=1,
-                   transport=Transport).channel()
+        Connection(virtual_host=1, transport=Transport).channel()
 
-        Connection(virtual_host='1',
-                   transport=Transport).channel()
+        Connection(virtual_host="1", transport=Transport).channel()
 
-        Connection(virtual_host='/1',
-                   transport=Transport).channel()
+        Connection(virtual_host="/1", transport=Transport).channel()
 
         with pytest.raises(Exception):
-            Connection('redis:///foo').channel()
+            Connection("redis:///foo").channel()
 
     def test_db_port(self):
         c1 = Connection(port=None, transport=Transport).channel()
@@ -1544,7 +1556,7 @@ class test_Redis:
     def test_close_in_poll(self):
         c = Connection(transport=Transport).channel()
         conn1 = c.client.connection
-        conn1._sock.data = [('BRPOP', ('test_Redis',))]
+        conn1._sock.data = [("BRPOP", ("test_Redis",))]
         c._in_poll = True
         c.close()
         assert conn1.disconnected
@@ -1553,7 +1565,7 @@ class test_Redis:
     def test_get__Empty(self):
         channel = self.connection.channel()
         with pytest.raises(Empty):
-            channel._get('does-not-exist')
+            channel._get("does-not-exist")
         channel.close()
 
     @pytest.mark.ensured_modules(*_redis_modules())
@@ -1583,7 +1595,6 @@ class test_Redis:
 
 
 class test_MultiChannelPoller:
-
     def setup_method(self):
         self.Poller = redis.MultiChannelPoller
 
@@ -1591,17 +1602,17 @@ class test_MultiChannelPoller:
         p = self.Poller()
         p._channels = []
         p.on_poll_start()
-        p._register_BRPOP = Mock(name='_register_BRPOP')
-        p._register_LISTEN = Mock(name='_register_LISTEN')
+        p._register_BRPOP = Mock(name="_register_BRPOP")
+        p._register_LISTEN = Mock(name="_register_LISTEN")
 
-        chan1 = Mock(name='chan1')
+        chan1 = Mock(name="chan1")
         p._channels = [chan1]
         chan1.active_queues = []
         chan1.active_fanout_queues = []
         p.on_poll_start()
 
-        chan1.active_queues = ['q1']
-        chan1.active_fanout_queues = ['q2']
+        chan1.active_queues = ["q1"]
+        chan1.active_fanout_queues = ["q2"]
         chan1.qos.can_consume.return_value = False
 
         p.on_poll_start()
@@ -1617,9 +1628,9 @@ class test_MultiChannelPoller:
 
     def test_on_poll_init(self):
         p = self.Poller()
-        chan1 = Mock(name='chan1')
+        chan1 = Mock(name="chan1")
         p._channels = []
-        poller = Mock(name='poller')
+        poller = Mock(name="poller")
         p.on_poll_init(poller)
         assert p.poller is poller
 
@@ -1631,20 +1642,20 @@ class test_MultiChannelPoller:
 
     def test_handle_event(self):
         p = self.Poller()
-        chan = Mock(name='chan')
-        p._fd_to_chan[13] = chan, 'BRPOP'
-        chan.handlers = {'BRPOP': Mock(name='BRPOP')}
+        chan = Mock(name="chan")
+        p._fd_to_chan[13] = chan, "BRPOP"
+        chan.handlers = {"BRPOP": Mock(name="BRPOP")}
 
         chan.qos.can_consume.return_value = False
         p.handle_event(13, redis.READ)
-        chan.handlers['BRPOP'].assert_not_called()
+        chan.handlers["BRPOP"].assert_not_called()
 
         chan.qos.can_consume.return_value = True
         p.handle_event(13, redis.READ)
-        chan.handlers['BRPOP'].assert_called_with()
+        chan.handlers["BRPOP"].assert_called_with()
 
         p.handle_event(13, redis.ERR)
-        chan._poll_error.assert_called_with('BRPOP')
+        chan._poll_error.assert_called_with("BRPOP")
 
         p.handle_event(13, ~(redis.READ | redis.ERR))
 
@@ -1710,6 +1721,7 @@ class test_MultiChannelPoller:
 
         def after_connected():
             client.connection._sock = Mock()
+
         client.connection.connect.side_effect = after_connected
 
         p._register(channel, client, type)
@@ -1727,7 +1739,7 @@ class test_MultiChannelPoller:
         assert p._register.call_count == 1
 
         channel.client.connection._sock = Mock()
-        p._chan_to_sock[(channel, channel.client, 'BRPOP')] = True
+        p._chan_to_sock[(channel, channel.client, "BRPOP")] = True
         channel._in_poll = True
         p._register_BRPOP(channel)
         assert channel._brpop_start.call_count == 1
@@ -1741,12 +1753,12 @@ class test_MultiChannelPoller:
         p._register = Mock()
 
         p._register_LISTEN(channel)
-        p._register.assert_called_with(channel, channel.subclient, 'LISTEN')
+        p._register.assert_called_with(channel, channel.subclient, "LISTEN")
         assert p._register.call_count == 1
         assert channel._subscribe.call_count == 1
 
         channel._in_listen = True
-        p._chan_to_sock[(channel, channel.subclient, 'LISTEN')] = 3
+        p._chan_to_sock[(channel, channel.subclient, "LISTEN")] = 3
         channel.subclient.connection._sock = Mock()
         p._register_LISTEN(channel)
         assert p._register.call_count == 1
@@ -1779,19 +1791,19 @@ class test_MultiChannelPoller:
     def test_qos_reject(self):
         p, channel = self.create_get()
         qos = redis.QoS(channel)
-        qos._remove_from_indices = Mock(name='_remove_from_indices')
+        qos._remove_from_indices = Mock(name="_remove_from_indices")
         qos.reject(1234)
         qos._remove_from_indices.assert_called_with(1234)
 
     def test_qos_requeue(self):
         p, channel = self.create_get()
         qos = redis.QoS(channel)
-        qos.restore_by_tag = Mock(name='restore_by_tag')
+        qos.restore_by_tag = Mock(name="restore_by_tag")
         qos.reject(1234, True)
         qos.restore_by_tag.assert_called_with(1234, leftmost=True)
 
     def test_get_brpop_qos_allow(self):
-        p, channel = self.create_get(queues=['a_queue'])
+        p, channel = self.create_get(queues=["a_queue"])
         channel.qos.can_consume.return_value = True
 
         with pytest.raises(redis.Empty):
@@ -1800,7 +1812,7 @@ class test_MultiChannelPoller:
         p._register_BRPOP.assert_called_with(channel)
 
     def test_get_brpop_qos_disallow(self):
-        p, channel = self.create_get(queues=['a_queue'])
+        p, channel = self.create_get(queues=["a_queue"])
         channel.qos.can_consume.return_value = False
 
         with pytest.raises(redis.Empty):
@@ -1809,7 +1821,7 @@ class test_MultiChannelPoller:
         p._register_BRPOP.assert_not_called()
 
     def test_get_listen(self):
-        p, channel = self.create_get(fanouts=['f_queue'])
+        p, channel = self.create_get(fanouts=["f_queue"])
 
         with pytest.raises(redis.Empty):
             p.get(Mock())
@@ -1818,38 +1830,36 @@ class test_MultiChannelPoller:
 
     def test_get_receives_ERR(self):
         p, channel = self.create_get(events=[(1, eventio.ERR)])
-        p._fd_to_chan[1] = (channel, 'BRPOP')
+        p._fd_to_chan[1] = (channel, "BRPOP")
 
         with pytest.raises(redis.Empty):
             p.get(Mock())
 
-        channel._poll_error.assert_called_with('BRPOP')
+        channel._poll_error.assert_called_with("BRPOP")
 
     def test_get_receives_multiple(self):
-        p, channel = self.create_get(events=[(1, eventio.ERR),
-                                             (1, eventio.ERR)])
-        p._fd_to_chan[1] = (channel, 'BRPOP')
+        p, channel = self.create_get(events=[(1, eventio.ERR), (1, eventio.ERR)])
+        p._fd_to_chan[1] = (channel, "BRPOP")
 
         with pytest.raises(redis.Empty):
             p.get(Mock())
 
-        channel._poll_error.assert_called_with('BRPOP')
+        channel._poll_error.assert_called_with("BRPOP")
 
 
 class test_Mutex:
-
-    def test_mutex(self, lock_id='xxx'):
-        client = Mock(name='client')
-        lock = client.lock.return_value = Mock(name='lock')
+    def test_mutex(self, lock_id="xxx"):
+        client = Mock(name="client")
+        lock = client.lock.return_value = Mock(name="lock")
 
         # Won
         lock.acquire.return_value = True
         held = False
-        with redis.Mutex(client, 'foo1', 100):
+        with redis.Mutex(client, "foo1", 100):
             held = True
         assert held
         lock.acquire.assert_called_with(blocking=False)
-        client.lock.assert_called_with('foo1', timeout=100)
+        client.lock.assert_called_with("foo1", timeout=100)
 
         client.reset_mock()
         lock.reset_mock()
@@ -1858,11 +1868,11 @@ class test_Mutex:
         lock.acquire.return_value = False
         held = False
         with pytest.raises(redis.MutexHeld):
-            with redis.Mutex(client, 'foo1', 100):
+            with redis.Mutex(client, "foo1", 100):
                 held = True
             assert not held
         lock.acquire.assert_called_with(blocking=False)
-        client.lock.assert_called_with('foo1', timeout=100)
+        client.lock.assert_called_with("foo1", timeout=100)
 
         client.reset_mock()
         lock.reset_mock()
@@ -1871,21 +1881,20 @@ class test_Mutex:
         lock.acquire.return_value = True
         lock.release.side_effect = redis.redis.exceptions.LockNotOwnedError()
         held = False
-        with redis.Mutex(client, 'foo1', 100):
+        with redis.Mutex(client, "foo1", 100):
             held = True
         assert held
 
 
 class test_RedisSentinel:
-
     def test_method_called(self):
         from kombu.transport.redis import SentinelChannel
 
-        with patch.object(SentinelChannel, '_sentinel_managed_pool') as p:
+        with patch.object(SentinelChannel, "_sentinel_managed_pool") as p:
             connection = Connection(
-                'sentinel://localhost:65534/',
+                "sentinel://localhost:65534/",
                 transport_options={
-                    'master_name': 'not_important',
+                    "master_name": "not_important",
                 },
             )
 
@@ -1894,115 +1903,134 @@ class test_RedisSentinel:
 
     def test_keyprefix_fanout(self):
         from kombu.transport.redis import SentinelChannel
-        with patch.object(SentinelChannel, '_sentinel_managed_pool'):
+
+        with patch.object(SentinelChannel, "_sentinel_managed_pool"):
             connection = Connection(
-                'sentinel://localhost:65532/1',
+                "sentinel://localhost:65532/1",
                 transport_options={
-                    'master_name': 'not_important',
+                    "master_name": "not_important",
                 },
             )
             channel = connection.channel()
-            assert channel.keyprefix_fanout == '/1.'
+            assert channel.keyprefix_fanout == "/1."
 
     def test_getting_master_from_sentinel(self):
-        with patch('redis.sentinel.Sentinel') as patched:
+        with patch("redis.sentinel.Sentinel") as patched:
             connection = Connection(
-                'sentinel://localhost/;'
-                'sentinel://localhost:65532/;'
-                'sentinel://user@localhost:65533/;'
-                'sentinel://:password@localhost:65534/;'
-                'sentinel://user:password@localhost:65535/;',
+                "sentinel://localhost/;"
+                "sentinel://localhost:65532/;"
+                "sentinel://user@localhost:65533/;"
+                "sentinel://:password@localhost:65534/;"
+                "sentinel://user:password@localhost:65535/;",
                 transport_options={
-                    'master_name': 'not_important',
+                    "master_name": "not_important",
                 },
             )
 
             connection.channel()
             patched.assert_called_once_with(
                 [
-                    ('localhost', 26379),
-                    ('localhost', 65532),
-                    ('localhost', 65533),
-                    ('localhost', 65534),
-                    ('localhost', 65535),
+                    ("localhost", 26379),
+                    ("localhost", 65532),
+                    ("localhost", 65533),
+                    ("localhost", 65534),
+                    ("localhost", 65535),
                 ],
-                connection_class=ANY, db=0, max_connections=10,
-                min_other_sentinels=0, password=None, sentinel_kwargs=None,
-                socket_connect_timeout=None, socket_keepalive=None,
-                socket_keepalive_options=None, socket_timeout=None,
-                username=None, retry_on_timeout=None, client_name=None)
+                connection_class=ANY,
+                db=0,
+                max_connections=10,
+                min_other_sentinels=0,
+                password=None,
+                sentinel_kwargs=None,
+                socket_connect_timeout=None,
+                socket_keepalive=None,
+                socket_keepalive_options=None,
+                socket_timeout=None,
+                username=None,
+                retry_on_timeout=None,
+                client_name=None,
+            )
 
             master_for = patched.return_value.master_for
             master_for.assert_called()
-            master_for.assert_called_with(
-                'not_important', ANY,
-                username=None, password=None
-            )
+            master_for.assert_called_with("not_important", ANY, username=None, password=None)
             master_for().connection_pool.get_connection.assert_called()
 
     def test_getting_master_from_sentinel_single_node(self):
-        with patch('redis.sentinel.Sentinel') as patched:
+        with patch("redis.sentinel.Sentinel") as patched:
             connection = Connection(
-                'sentinel://localhost:65532/',
+                "sentinel://localhost:65532/",
                 transport_options={
-                    'master_name': 'not_important',
+                    "master_name": "not_important",
                 },
             )
 
             connection.channel()
             patched.assert_called_once_with(
-                [('localhost', 65532)],
-                connection_class=ANY, db=0, max_connections=10,
-                min_other_sentinels=0, password=None, sentinel_kwargs=None,
-                socket_connect_timeout=None, socket_keepalive=None,
-                socket_keepalive_options=None, socket_timeout=None,
-                username=None, retry_on_timeout=None, client_name=None)
+                [("localhost", 65532)],
+                connection_class=ANY,
+                db=0,
+                max_connections=10,
+                min_other_sentinels=0,
+                password=None,
+                sentinel_kwargs=None,
+                socket_connect_timeout=None,
+                socket_keepalive=None,
+                socket_keepalive_options=None,
+                socket_timeout=None,
+                username=None,
+                retry_on_timeout=None,
+                client_name=None,
+            )
 
             master_for = patched.return_value.master_for
             master_for.assert_called()
-            master_for.assert_called_with(
-                'not_important', ANY,
-                username=None, password=None
-            )
+            master_for.assert_called_with("not_important", ANY, username=None, password=None)
             master_for().connection_pool.get_connection.assert_called()
 
     def test_getting_master_from_sentinel_with_client_name(self):
         # When client_name is provided in transport options, ensure it is
         # forwarded to the redis.sentinel.Sentinel constructor.
-        with patch('redis.sentinel.Sentinel') as patched:
+        with patch("redis.sentinel.Sentinel") as patched:
             connection = Connection(
-                'sentinel://localhost:65532/',
+                "sentinel://localhost:65532/",
                 transport_options={
-                    'master_name': 'not_important',
-                    'client_name': 'kombu-worker',
+                    "master_name": "not_important",
+                    "client_name": "kombu-worker",
                 },
             )
 
             connection.channel()
             patched.assert_called_once_with(
                 [
-                    ('localhost', 65532),
+                    ("localhost", 65532),
                 ],
-                connection_class=ANY, db=0, max_connections=10,
-                min_other_sentinels=0, password=None, sentinel_kwargs=None,
-                socket_connect_timeout=None, socket_keepalive=None,
-                socket_keepalive_options=None, socket_timeout=None,
-                username=None, retry_on_timeout=None, client_name='kombu-worker')
+                connection_class=ANY,
+                db=0,
+                max_connections=10,
+                min_other_sentinels=0,
+                password=None,
+                sentinel_kwargs=None,
+                socket_connect_timeout=None,
+                socket_keepalive=None,
+                socket_keepalive_options=None,
+                socket_timeout=None,
+                username=None,
+                retry_on_timeout=None,
+                client_name="kombu-worker",
+            )
 
             master_for = patched.return_value.master_for
             master_for.assert_called()
-            master_for.assert_called_with(
-                'not_important', ANY,
-                username=None, password=None
-            )
+            master_for.assert_called_with("not_important", ANY, username=None, password=None)
             master_for().connection_pool.get_connection.assert_called()
 
     def test_getting_master_from_sentinel_with_acl_credentials(self):
-        with patch('redis.sentinel.Sentinel') as patched:
+        with patch("redis.sentinel.Sentinel") as patched:
             connection = Connection(
-                'sentinel://myuser:mypassword@localhost:65532/',
+                "sentinel://myuser:mypassword@localhost:65532/",
                 transport_options={
-                    'master_name': 'not_important',
+                    "master_name": "not_important",
                 },
             )
 
@@ -2010,29 +2038,34 @@ class test_RedisSentinel:
 
             patched.assert_called_once_with(
                 [
-                    ('localhost', 65532),
+                    ("localhost", 65532),
                 ],
-                connection_class=ANY, db=0, max_connections=10,
-                min_other_sentinels=0, password='mypassword',
+                connection_class=ANY,
+                db=0,
+                max_connections=10,
+                min_other_sentinels=0,
+                password="mypassword",
                 sentinel_kwargs=None,
-                socket_connect_timeout=None, socket_keepalive=None,
-                socket_keepalive_options=None, socket_timeout=None,
-                username='myuser', retry_on_timeout=None, client_name=None)
+                socket_connect_timeout=None,
+                socket_keepalive=None,
+                socket_keepalive_options=None,
+                socket_timeout=None,
+                username="myuser",
+                retry_on_timeout=None,
+                client_name=None,
+            )
 
             master_for = patched.return_value.master_for
             master_for.assert_called()
-            master_for.assert_called_with(
-                'not_important', ANY,
-                username='myuser', password='mypassword'
-            )
+            master_for.assert_called_with("not_important", ANY, username="myuser", password="mypassword")
             master_for().connection_pool.get_connection.assert_called()
 
     def test_getting_master_from_sentinel_with_password_only(self):
-        with patch('redis.sentinel.Sentinel') as patched:
+        with patch("redis.sentinel.Sentinel") as patched:
             connection = Connection(
-                'sentinel://:mypassword@localhost:65532/',
+                "sentinel://:mypassword@localhost:65532/",
                 transport_options={
-                    'master_name': 'not_important',
+                    "master_name": "not_important",
                 },
             )
 
@@ -2040,30 +2073,35 @@ class test_RedisSentinel:
 
             patched.assert_called_once_with(
                 [
-                    ('localhost', 65532),
+                    ("localhost", 65532),
                 ],
-                connection_class=ANY, db=0, max_connections=10,
-                min_other_sentinels=0, password='mypassword',
+                connection_class=ANY,
+                db=0,
+                max_connections=10,
+                min_other_sentinels=0,
+                password="mypassword",
                 sentinel_kwargs=None,
-                socket_connect_timeout=None, socket_keepalive=None,
-                socket_keepalive_options=None, socket_timeout=None,
-                username=None, retry_on_timeout=None, client_name=None)
+                socket_connect_timeout=None,
+                socket_keepalive=None,
+                socket_keepalive_options=None,
+                socket_timeout=None,
+                username=None,
+                retry_on_timeout=None,
+                client_name=None,
+            )
 
             master_for = patched.return_value.master_for
             master_for.assert_called()
-            master_for.assert_called_with(
-                'not_important', ANY,
-                username=None, password='mypassword'
-            )
+            master_for.assert_called_with("not_important", ANY, username=None, password="mypassword")
             master_for().connection_pool.get_connection.assert_called()
 
     def test_can_create_connection(self):
         from redis.exceptions import ConnectionError
 
         connection = Connection(
-            'sentinel://localhost:65534/',
+            "sentinel://localhost:65534/",
             transport_options={
-                'master_name': 'not_important',
+                "master_name": "not_important",
             },
         )
         with pytest.raises(ConnectionError):
@@ -2071,45 +2109,43 @@ class test_RedisSentinel:
 
     def test_missing_master_name_transport_option(self):
         connection = Connection(
-            'sentinel://localhost:65534/',
+            "sentinel://localhost:65534/",
         )
-        with patch('redis.sentinel.Sentinel'),  \
-             pytest.raises(ValueError) as excinfo:
+        with patch("redis.sentinel.Sentinel"), pytest.raises(ValueError) as excinfo:
             connection.connect()
         expected = "'master_name' transport option must be specified."
         assert expected == excinfo.value.args[0]
 
     def test_sentinel_with_ssl(self):
         ssl_params = {
-            'ssl_cert_reqs': 2,
-            'ssl_ca_certs': '/foo/ca.pem',
-            'ssl_certfile': '/foo/cert.crt',
-            'ssl_keyfile': '/foo/pkey.key'
+            "ssl_cert_reqs": 2,
+            "ssl_ca_certs": "/foo/ca.pem",
+            "ssl_certfile": "/foo/cert.crt",
+            "ssl_keyfile": "/foo/pkey.key",
         }
-        with patch('redis.sentinel.Sentinel'):
-            with Connection(
-                    'sentinel://',
-                    transport_options={'master_name': 'not_important'},
-                    ssl=ssl_params) as conn:
-                params = conn.default_channel._connparams()
-                assert params['ssl_cert_reqs'] == ssl_params['ssl_cert_reqs']
-                assert params['ssl_ca_certs'] == ssl_params['ssl_ca_certs']
-                assert params['ssl_certfile'] == ssl_params['ssl_certfile']
-                assert params['ssl_keyfile'] == ssl_params['ssl_keyfile']
-                assert params.get('ssl') is None
-                from kombu.transport.redis import SentinelManagedSSLConnection
-                assert (params['connection_class'] is
-                        SentinelManagedSSLConnection)
+        with (
+            patch("redis.sentinel.Sentinel"),
+            Connection("sentinel://", transport_options={"master_name": "not_important"}, ssl=ssl_params) as conn,
+        ):
+            params = conn.default_channel._connparams()
+            assert params["ssl_cert_reqs"] == ssl_params["ssl_cert_reqs"]
+            assert params["ssl_ca_certs"] == ssl_params["ssl_ca_certs"]
+            assert params["ssl_certfile"] == ssl_params["ssl_certfile"]
+            assert params["ssl_keyfile"] == ssl_params["ssl_keyfile"]
+            assert params.get("ssl") is None
+            from kombu.transport.redis import SentinelManagedSSLConnection
+
+            assert params["connection_class"] is SentinelManagedSSLConnection
 
     def test_can_create_connection_with_global_keyprefix(self):
         from redis.exceptions import ConnectionError
 
         try:
             connection = Connection(
-                'sentinel://localhost:65534/',
+                "sentinel://localhost:65534/",
                 transport_options={
-                    'global_keyprefix': 'some_prefix',
-                    'master_name': 'not_important',
+                    "global_keyprefix": "some_prefix",
+                    "master_name": "not_important",
                 },
             )
             with pytest.raises(ConnectionError):
@@ -2120,28 +2156,21 @@ class test_RedisSentinel:
     def test_can_create_correct_mixin_with_global_keyprefix(self):
         from kombu.transport.redis import GlobalKeyPrefixMixin
 
-        with patch('redis.sentinel.Sentinel'):
+        with patch("redis.sentinel.Sentinel"):
             connection = Connection(
-                'sentinel://localhost:65534/',
+                "sentinel://localhost:65534/",
                 transport_options={
-                    'global_keyprefix': 'some_prefix',
-                    'master_name': 'not_important',
+                    "global_keyprefix": "some_prefix",
+                    "master_name": "not_important",
                 },
             )
 
-            assert isinstance(
-                connection.channel().client,
-                GlobalKeyPrefixMixin
-            )
-            assert (
-                connection.channel().client.global_keyprefix
-                == 'some_prefix'
-            )
+            assert isinstance(connection.channel().client, GlobalKeyPrefixMixin)
+            assert connection.channel().client.global_keyprefix == "some_prefix"
             connection.close()
 
 
 class test_GlobalKeyPrefixMixin:
-
     from kombu.transport.redis import GlobalKeyPrefixMixin
 
     global_keyprefix = "prefix_"
@@ -2151,18 +2180,10 @@ class test_GlobalKeyPrefixMixin:
     def test_prefix_simple_args(self):
         for command in self.mixin.PREFIXED_SIMPLE_COMMANDS:
             prefixed_args = self.mixin._prefix_args([command, "fake_key"])
-            assert prefixed_args == [
-                command,
-                f"{self.global_keyprefix}fake_key"
-            ]
+            assert prefixed_args == [command, f"{self.global_keyprefix}fake_key"]
 
     def test_prefix_delete_args(self):
-        prefixed_args = self.mixin._prefix_args([
-            "DEL",
-            "fake_key",
-            "fake_key2",
-            "fake_key3"
-        ])
+        prefixed_args = self.mixin._prefix_args(["DEL", "fake_key", "fake_key2", "fake_key3"])
 
         assert prefixed_args == [
             "DEL",
@@ -2172,12 +2193,7 @@ class test_GlobalKeyPrefixMixin:
         ]
 
     def test_prefix_brpop_args(self):
-        prefixed_args = self.mixin._prefix_args([
-            "BRPOP",
-            "fake_key",
-            "fake_key2",
-            "not_prefixed"
-        ])
+        prefixed_args = self.mixin._prefix_args(["BRPOP", "fake_key", "fake_key2", "not_prefixed"])
 
         assert prefixed_args == [
             "BRPOP",
@@ -2187,13 +2203,15 @@ class test_GlobalKeyPrefixMixin:
         ]
 
     def test_prefix_evalsha_args(self):
-        prefixed_args = self.mixin._prefix_args([
-            "EVALSHA",
-            "not_prefixed",
-            "not_prefixed",
-            "fake_key",
-            "not_prefixed",
-        ])
+        prefixed_args = self.mixin._prefix_args(
+            [
+                "EVALSHA",
+                "not_prefixed",
+                "not_prefixed",
+                "fake_key",
+                "not_prefixed",
+            ],
+        )
 
         assert prefixed_args == [
             "EVALSHA",

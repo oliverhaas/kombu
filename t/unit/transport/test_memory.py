@@ -8,21 +8,14 @@ from kombu import Connection, Consumer, Exchange, Producer, Queue
 
 
 class test_MemoryTransport:
-
     def setup_method(self):
-        self.c = Connection(transport='memory')
-        self.e = Exchange('test_transport_memory')
-        self.q = Queue('test_transport_memory',
-                       exchange=self.e,
-                       routing_key='test_transport_memory')
-        self.q2 = Queue('test_transport_memory2',
-                        exchange=self.e,
-                        routing_key='test_transport_memory2')
-        self.fanout = Exchange('test_transport_memory_fanout', type='fanout')
-        self.q3 = Queue('test_transport_memory_fanout1',
-                        exchange=self.fanout)
-        self.q4 = Queue('test_transport_memory_fanout2',
-                        exchange=self.fanout)
+        self.c = Connection(transport="memory")
+        self.e = Exchange("test_transport_memory")
+        self.q = Queue("test_transport_memory", exchange=self.e, routing_key="test_transport_memory")
+        self.q2 = Queue("test_transport_memory2", exchange=self.e, routing_key="test_transport_memory2")
+        self.fanout = Exchange("test_transport_memory_fanout", type="fanout")
+        self.q3 = Queue("test_transport_memory_fanout1", exchange=self.fanout)
+        self.q4 = Queue("test_transport_memory_fanout2", exchange=self.fanout)
 
     def test_driver_version(self):
         assert self.c.transport.driver_version()
@@ -33,7 +26,7 @@ class test_MemoryTransport:
         consumer = Consumer(channel, self.q, no_ack=True)
 
         for i in range(10):
-            producer.publish({'foo': i}, routing_key='test_transport_memory')
+            producer.publish({"foo": i}, routing_key="test_transport_memory")
 
         _received = []
 
@@ -55,13 +48,13 @@ class test_MemoryTransport:
         consumer = self.c.Consumer([self.q3, self.q4])
 
         producer.publish(
-            {'hello': 'world'},
+            {"hello": "world"},
             declare=consumer.queues,
             exchange=self.fanout,
         )
 
-        assert self.q3(self.c).get().payload == {'hello': 'world'}
-        assert self.q4(self.c).get().payload == {'hello': 'world'}
+        assert self.q3(self.c).get().payload == {"hello": "world"}
+        assert self.q4(self.c).get().payload == {"hello": "world"}
         assert self.q3(self.c).get() is None
         assert self.q4(self.c).get() is None
 
@@ -73,9 +66,9 @@ class test_MemoryTransport:
         self.q2(channel).declare()
 
         for i in range(10):
-            producer.publish({'foo': i}, routing_key='test_transport_memory')
+            producer.publish({"foo": i}, routing_key="test_transport_memory")
         for i in range(10):
-            producer.publish({'foo': i}, routing_key='test_transport_memory2')
+            producer.publish({"foo": i}, routing_key="test_transport_memory2")
 
         _received1 = []
         _received2 = []
@@ -102,15 +95,13 @@ class test_MemoryTransport:
         assert len(_received1) + len(_received2) == 20
 
         # compression
-        producer.publish({'compressed': True},
-                         routing_key='test_transport_memory',
-                         compression='zlib')
+        producer.publish({"compressed": True}, routing_key="test_transport_memory", compression="zlib")
         m = self.q(channel).get()
-        assert m.payload == {'compressed': True}
+        assert m.payload == {"compressed": True}
 
         # queue.delete
         for i in range(10):
-            producer.publish({'foo': i}, routing_key='test_transport_memory')
+            producer.publish({"foo": i}, routing_key="test_transport_memory")
         assert self.q(channel).get()
         self.q(channel).delete()
         self.q(channel).declare()
@@ -118,7 +109,7 @@ class test_MemoryTransport:
 
         # queue.purge
         for i in range(10):
-            producer.publish({'foo': i}, routing_key='test_transport_memory2')
+            producer.publish({"foo": i}, routing_key="test_transport_memory2")
         assert self.q2(channel).get()
         self.q2(channel).purge()
         assert self.q2(channel).get() is None
@@ -142,7 +133,7 @@ class test_MemoryTransport:
         consumer = self.c.Consumer([self.q2])
 
         producer.publish(
-            {'hello': 'world'},
+            {"hello": "world"},
             declare=consumer.queues,
             routing_key=self.q2.routing_key,
             exchange=self.q2.exchange,
@@ -150,9 +141,8 @@ class test_MemoryTransport:
         message = consumer.queues[0].get()._raw
 
         class Cycle:
-
             def get(self, callback, timeout=None):
-                return (message, 'foo'), c1
+                return (message, "foo"), c1
 
         self.c.transport.cycle = Cycle()
         self.c.drain_events()
@@ -161,24 +151,25 @@ class test_MemoryTransport:
         chan = self.c.channel()
         chan.queues.clear()
 
-        x = chan._queue_for('foo')
+        x = chan._queue_for("foo")
         assert x
-        assert chan._queue_for('foo') is x
+        assert chan._queue_for("foo") is x
 
     # see the issue
     # https://github.com/celery/kombu/issues/1050
     def test_producer_on_return(self):
         def on_return(_exception, _exchange, _routing_key, _message):
             pass
+
         channel = self.c.channel()
         producer = Producer(channel, on_return=on_return)
         consumer = self.c.Consumer([self.q3])
 
         producer.publish(
-            {'hello': 'on return'},
+            {"hello": "on return"},
             declare=consumer.queues,
             exchange=self.fanout,
         )
 
-        assert self.q3(self.c).get().payload == {'hello': 'on return'}
+        assert self.q3(self.c).get().payload == {"hello": "on return"}
         assert self.q3(self.c).get() is None

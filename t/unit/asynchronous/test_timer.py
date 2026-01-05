@@ -4,12 +4,10 @@ from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 import pytest
-
 from kombu.asynchronous.timer import Entry, Timer, to_timestamp
 
 
 class test_to_timestamp:
-
     def test_timestamp(self):
         assert to_timestamp(3.13) == 3.13
 
@@ -18,12 +16,11 @@ class test_to_timestamp:
 
 
 class test_Entry:
-
     def test_call(self):
-        fun = Mock(name='fun')
-        tref = Entry(fun, (4, 4), {'moo': 'baz'})
+        fun = Mock(name="fun")
+        tref = Entry(fun, (4, 4), {"moo": "baz"})
         tref()
-        fun.assert_called_with(4, 4, moo='baz')
+        fun.assert_called_with(4, 4, moo="baz")
 
     def test_cancel(self):
         tref = Entry(lambda x: x, (1,), {})
@@ -34,7 +31,7 @@ class test_Entry:
         assert tref.cancelled
 
     def test_repr(self):
-        tref = Entry(lambda x: x(1,), {})
+        tref = Entry(lambda x: x(1), {})
         assert repr(tref)
 
     def test_hash(self):
@@ -55,10 +52,9 @@ class test_Entry:
 
 
 class test_Timer:
-
     def test_enter_exit(self):
         x = Timer()
-        x.stop = Mock(name='timer.stop')
+        x.stop = Mock(name="timer.stop")
         with x:
             pass
         x.stop.assert_called_with()
@@ -75,19 +71,18 @@ class test_Timer:
 
     def test_handle_error(self):
         from datetime import datetime
-        on_error = Mock(name='on_error')
+
+        on_error = Mock(name="on_error")
 
         s = Timer(on_error=on_error)
 
-        with patch('kombu.asynchronous.timer.to_timestamp') as tot:
+        with patch("kombu.asynchronous.timer.to_timestamp") as tot:
             tot.side_effect = OverflowError()
-            s.enter_at(Entry(lambda: None, (), {}),
-                       eta=datetime.now())
+            s.enter_at(Entry(lambda: None, (), {}), eta=datetime.now())
             s.enter_at(Entry(lambda: None, (), {}), eta=None)
             s.on_error = None
             with pytest.raises(OverflowError):
-                s.enter_at(Entry(lambda: None, (), {}),
-                           eta=datetime.now())
+                s.enter_at(Entry(lambda: None, (), {}), eta=datetime.now())
         on_error.assert_called_once()
         exc = on_error.call_args[0][0]
         assert isinstance(exc, OverflowError)
@@ -98,7 +93,7 @@ class test_Timer:
             t.schedule.enter_after = Mock()
 
             myfun = Mock()
-            myfun.__name__ = 'myfun'
+            myfun.__name__ = "myfun"
             t.call_repeatedly(0.03, myfun)
 
             assert t.schedule.enter_after.call_count == 1
@@ -118,7 +113,7 @@ class test_Timer:
         finally:
             t.stop()
 
-    @patch('kombu.asynchronous.timer.logger')
+    @patch("kombu.asynchronous.timer.logger")
     def test_apply_entry_error_handled(self, logger):
         t = Timer()
         t.schedule.on_error = None
@@ -142,8 +137,8 @@ class test_Timer:
     def test_enter_after(self):
         t = Timer()
         t._enter = Mock()
-        fun = Mock(name='fun')
-        time = Mock(name='time')
+        fun = Mock(name="fun")
+        time = Mock(name="time")
         time.return_value = 10
         t.enter_after(10, fun, time=time)
         time.assert_called_with()

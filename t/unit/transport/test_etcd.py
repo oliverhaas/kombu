@@ -5,21 +5,19 @@ from queue import Empty
 from unittest.mock import Mock, patch
 
 import pytest
-
 from kombu.transport.etcd import Channel, Transport
 
-pytest.importorskip('etcd')
+pytest.importorskip("etcd")
 
 
 class test_Etcd:
-
     def setup_method(self):
         self.connection = Mock()
-        self.connection._used_channel_ids = array('H')
+        self.connection._used_channel_ids = array("H")
         self.connection.channel_max = 65535
         self.connection.client.transport_options = {}
         self.connection.client.port = 2739
-        self.client = self.patching('etcd.Client').return_value
+        self.client = self.patching("etcd.Client").return_value
         self.channel = Channel(connection=self.connection)
 
     def test_driver_version(self):
@@ -28,43 +26,42 @@ class test_Etcd:
     def test_failed_get(self):
         self.channel._acquire_lock = Mock(return_value=False)
         self.channel.client.read.side_effect = IndexError
-        with patch('etcd.Lock'):
-            with pytest.raises(Empty):
-                self.channel._get('empty')()
+        with patch("etcd.Lock"), pytest.raises(Empty):
+            self.channel._get("empty")()
 
     def test_test_purge(self):
-        with patch('etcd.Lock'):
+        with patch("etcd.Lock"):
             self.client.delete = Mock(return_value=True)
-            assert self.channel._purge('foo')
+            assert self.channel._purge("foo")
 
     def test_key_prefix(self):
-        key = self.channel._key_prefix('myqueue')
-        assert key == 'kombu/myqueue'
+        key = self.channel._key_prefix("myqueue")
+        assert key == "kombu/myqueue"
 
     def test_create_delete_queue(self):
-        queue = 'mynewqueue'
+        queue = "mynewqueue"
 
-        with patch('etcd.Lock'):
-            self.client.write.return_value = self.patching('etcd.EtcdResult')
+        with patch("etcd.Lock"):
+            self.client.write.return_value = self.patching("etcd.EtcdResult")
             assert self.channel._new_queue(queue)
 
-            self.client.delete.return_value = self.patching('etcd.EtcdResult')
+            self.client.delete.return_value = self.patching("etcd.EtcdResult")
             self.channel._delete(queue)
 
     def test_size(self):
-        with patch('etcd.Lock'):
-            self.client.read.return_value = self.patching(
-                'etcd.EtcdResult', _children=[{}, {}])
-            assert self.channel._size('q') == 2
+        with patch("etcd.Lock"):
+            self.client.read.return_value = self.patching("etcd.EtcdResult", _children=[{}, {}])
+            assert self.channel._size("q") == 2
 
     def test_get(self):
-        with patch('etcd.Lock'):
+        with patch("etcd.Lock"):
             self.client.read.return_value = self.patching(
-                'etcd.EtcdResult',
-                _children=[{'key': 'myqueue', 'modifyIndex': 1, 'value': '1'}])
-            assert self.channel._get('myqueue') is not None
+                "etcd.EtcdResult",
+                _children=[{"key": "myqueue", "modifyIndex": 1, "value": "1"}],
+            )
+            assert self.channel._get("myqueue") is not None
 
     def test_put(self):
-        with patch('etcd.Lock'):
-            self.client.write.return_value = self.patching('etcd.EtcdResult')
-            assert self.channel._put('myqueue', 'mydata') is None
+        with patch("etcd.Lock"):
+            self.client.write.return_value = self.patching("etcd.EtcdResult")
+            assert self.channel._put("myqueue", "mydata") is None

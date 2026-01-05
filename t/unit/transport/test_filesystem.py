@@ -12,33 +12,32 @@ from kombu import Connection, Consumer, Exchange, Producer, Queue
 
 @t.skip.if_win32
 class test_FilesystemTransport:
-
     def setup_method(self):
         self.channels = set()
         try:
             data_folder_in = tempfile.mkdtemp()
             data_folder_out = tempfile.mkdtemp()
         except Exception:
-            pytest.skip('filesystem transport: cannot create tempfiles')
-        self.c = Connection(transport='filesystem',
-                            transport_options={
-                                'data_folder_in': data_folder_in,
-                                'data_folder_out': data_folder_out,
-                            })
+            pytest.skip("filesystem transport: cannot create tempfiles")
+        self.c = Connection(
+            transport="filesystem",
+            transport_options={
+                "data_folder_in": data_folder_in,
+                "data_folder_out": data_folder_out,
+            },
+        )
         self.channels.add(self.c.default_channel)
-        self.p = Connection(transport='filesystem',
-                            transport_options={
-                                'data_folder_in': data_folder_out,
-                                'data_folder_out': data_folder_in,
-                            })
+        self.p = Connection(
+            transport="filesystem",
+            transport_options={
+                "data_folder_in": data_folder_out,
+                "data_folder_out": data_folder_in,
+            },
+        )
         self.channels.add(self.p.default_channel)
-        self.e = Exchange('test_transport_filesystem')
-        self.q = Queue('test_transport_filesystem',
-                       exchange=self.e,
-                       routing_key='test_transport_filesystem')
-        self.q2 = Queue('test_transport_filesystem2',
-                        exchange=self.e,
-                        routing_key='test_transport_filesystem2')
+        self.e = Exchange("test_transport_filesystem")
+        self.q = Queue("test_transport_filesystem", exchange=self.e, routing_key="test_transport_filesystem")
+        self.q2 = Queue("test_transport_filesystem2", exchange=self.e, routing_key="test_transport_filesystem2")
 
     def teardown_method(self):
         # make sure we don't attempt to restore messages at shutdown.
@@ -58,12 +57,10 @@ class test_FilesystemTransport:
 
     def test_produce_consume_noack(self):
         producer = Producer(self._add_channel(self.p.channel()), self.e)
-        consumer = Consumer(self._add_channel(self.c.channel()), self.q,
-                            no_ack=True)
+        consumer = Consumer(self._add_channel(self.c.channel()), self.q, no_ack=True)
 
         for i in range(10):
-            producer.publish({'foo': i},
-                             routing_key='test_transport_filesystem')
+            producer.publish({"foo": i}, routing_key="test_transport_filesystem")
 
         _received = []
 
@@ -89,11 +86,9 @@ class test_FilesystemTransport:
         self.q2(consumer_channel).declare()
 
         for i in range(10):
-            producer.publish({'foo': i},
-                             routing_key='test_transport_filesystem')
+            producer.publish({"foo": i}, routing_key="test_transport_filesystem")
         for i in range(10):
-            producer.publish({'foo': i},
-                             routing_key='test_transport_filesystem2')
+            producer.publish({"foo": i}, routing_key="test_transport_filesystem2")
 
         _received1 = []
         _received2 = []
@@ -120,16 +115,13 @@ class test_FilesystemTransport:
         assert len(_received1) + len(_received2) == 20
 
         # compression
-        producer.publish({'compressed': True},
-                         routing_key='test_transport_filesystem',
-                         compression='zlib')
+        producer.publish({"compressed": True}, routing_key="test_transport_filesystem", compression="zlib")
         m = self.q(consumer_channel).get()
-        assert m.payload == {'compressed': True}
+        assert m.payload == {"compressed": True}
 
         # queue.delete
         for i in range(10):
-            producer.publish({'foo': i},
-                             routing_key='test_transport_filesystem')
+            producer.publish({"foo": i}, routing_key="test_transport_filesystem")
         assert self.q(consumer_channel).get()
         self.q(consumer_channel).delete()
         self.q(consumer_channel).declare()
@@ -137,8 +129,7 @@ class test_FilesystemTransport:
 
         # queue.purge
         for i in range(10):
-            producer.publish({'foo': i},
-                             routing_key='test_transport_filesystem2')
+            producer.publish({"foo": i}, routing_key="test_transport_filesystem2")
         assert self.q2(consumer_channel).get()
         self.q2(consumer_channel).purge()
         assert self.q2(consumer_channel).get() is None
@@ -189,7 +180,6 @@ class test_FilesystemFanout:
                 pass
 
     def test_produce_consume(self):
-
         producer = Producer(self.producer_channel, self.exchange)
         consumer1 = Consumer(self.consume_channel, self.q1)
         consumer2 = Consumer(self.consume_channel, self.q2)
@@ -281,26 +271,21 @@ class test_FilesystemLock:
                 pass
 
     def test_lock_during_process(self):
-        pytest.importorskip('fcntl')
+        pytest.importorskip("fcntl")
         from fcntl import LOCK_EX, LOCK_SH
 
         producer = Producer(self.producer_channel, self.exchange)
 
-        with patch("kombu.transport.filesystem.lock") as lock_m, patch(
-            "kombu.transport.filesystem.unlock"
-        ) as unlock_m:
+        with patch("kombu.transport.filesystem.lock") as lock_m, patch("kombu.transport.filesystem.unlock") as unlock_m:
             Consumer(self.consume_channel, self.q)
             assert unlock_m.call_count == 1
             lock_m.assert_called_once_with(unlock_m.call_args[0][0], LOCK_EX)
 
         self.q(self.consume_channel).declare()
-        with patch("kombu.transport.filesystem.lock") as lock_m, patch(
-            "kombu.transport.filesystem.unlock"
-        ) as unlock_m:
+        with patch("kombu.transport.filesystem.lock") as lock_m, patch("kombu.transport.filesystem.unlock") as unlock_m:
             producer.publish({"foo": 1})
             assert unlock_m.call_count == 2
             assert lock_m.call_count == 2
             exchange_file_obj = unlock_m.call_args_list[0][0][0]
             msg_file_obj = unlock_m.call_args_list[1][0][0]
-            assert lock_m.call_args_list == [call(exchange_file_obj, LOCK_SH),
-                                             call(msg_file_obj, LOCK_EX)]
+            assert lock_m.call_args_list == [call(exchange_file_obj, LOCK_SH), call(msg_file_obj, LOCK_EX)]

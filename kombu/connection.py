@@ -1,12 +1,16 @@
 """Connection - Pure asyncio connection management for Kombu.
 
 This module provides the Connection class for establishing connections
-to Redis brokers using pure asyncio.
+to message brokers using pure asyncio.
 
 Example:
     async with Connection('redis://localhost') as conn:
         async with conn.Producer() as producer:
             await producer.publish({'hello': 'world'}, routing_key='my_queue')
+
+    # Memory transport for testing
+    async with Connection('memory://') as conn:
+        ...
 """
 
 from __future__ import annotations
@@ -15,21 +19,46 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from .log import get_logger
-from .transport.redis import Transport
+from .transport.base import Transport as BaseTransport  # noqa: TC001
 
 if TYPE_CHECKING:
     from .entity import Queue
     from .messaging import Consumer, Producer
     from .simple import SimpleQueue
-    from .transport.redis import Channel
+    from .transport.base import Channel
 
 __all__ = ("Connection",)
 
 logger = get_logger(__name__)
 
+# Transport registry - uses Any to avoid circular imports
+TRANSPORT_REGISTRY: dict[str, type[BaseTransport]] = {}
+
+
+def _get_transport_class(scheme: str) -> type[BaseTransport]:
+    """Get transport class for a URL scheme."""
+    if not TRANSPORT_REGISTRY:
+        # Lazy load transports
+        from .transport.filesystem import Transport as FilesystemTransport
+        from .transport.memory import Transport as MemoryTransport
+        from .transport.redis import Transport as RedisTransport
+
+        TRANSPORT_REGISTRY["redis"] = RedisTransport
+        TRANSPORT_REGISTRY["rediss"] = RedisTransport
+        TRANSPORT_REGISTRY["memory"] = MemoryTransport
+        TRANSPORT_REGISTRY["filesystem"] = FilesystemTransport
+
+    if scheme not in TRANSPORT_REGISTRY:
+        raise ValueError(
+            f"Unsupported transport scheme: {scheme}. "
+            f"Supported schemes: {', '.join(sorted(TRANSPORT_REGISTRY.keys()))}",
+        )
+
+    return TRANSPORT_REGISTRY[scheme]
+
 
 class Connection:
-    """A connection to the Redis broker.
+    """A connection to a message broker.
 
     Pure asyncio implementation. All methods are async.
 
@@ -38,8 +67,12 @@ class Connection:
             channel = await conn.channel()
             await channel.publish(b'hello', exchange='', routing_key='myqueue')
 
+        # Memory transport (useful for testing)
+        async with Connection('memory://') as conn:
+            ...
+
     Arguments:
-        hostname: Broker URL (e.g., 'redis://localhost:6379').
+        hostname: Broker URL (e.g., 'redis://localhost:6379', 'memory://').
 
     Keyword Arguments:
         transport_options: Additional options for the transport.
@@ -53,20 +86,18 @@ class Connection:
     ):
         self._url = hostname
         self._transport_options = transport_options or {}
-        self._transport: Transport | None = None
+        self._transport: BaseTransport | None = None
         self._default_channel: Channel | None = None
         self._closed = False
 
-        # Parse URL for validation
+        # Parse URL and validate scheme
         parsed = urlparse(hostname)
-        if parsed.scheme not in ("redis", "rediss"):
-            raise ValueError(
-                f"Unsupported transport scheme: {parsed.scheme}. "
-                "This pure asyncio Kombu only supports 'redis://' and 'rediss://'."
-            )
+        self._scheme = parsed.scheme
+        # Validate by trying to get the transport class
+        _get_transport_class(self._scheme)
 
     @property
-    def transport(self) -> Transport | None:
+    def transport(self) -> BaseTransport | None:
         """Get the transport."""
         return self._transport
 
@@ -81,7 +112,8 @@ class Connection:
         Returns self for chaining.
         """
         if self._transport is None:
-            self._transport = Transport(
+            transport_class = _get_transport_class(self._scheme)
+            self._transport = transport_class(
                 url=self._url,
                 **self._transport_options,
             )

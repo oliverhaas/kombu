@@ -4,7 +4,6 @@ from kombu.utils.uuid import uuid
 
 
 class test_UUID:
-
     def test_uuid4(self) -> None:
         assert uuid() != uuid()
 

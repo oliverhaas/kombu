@@ -4,22 +4,21 @@ from io import BytesIO
 from unittest.mock import ANY, Mock, call, patch
 
 import pytest
-
-import t.skip
 from kombu.asynchronous.http.curl import READ, WRITE, CurlClient
 
-pytest.importorskip('pycurl')
+import t.skip
+
+pytest.importorskip("pycurl")
 
 
 @t.skip.if_pypy
-@pytest.mark.usefixtures('hub')
+@pytest.mark.usefixtures("hub")
 class test_CurlClient:
-
     class Client(CurlClient):
-        Curl = Mock(name='Curl')
+        Curl = Mock(name="Curl")
 
     def test_when_pycurl_missing(self, patching):
-        patching('kombu.asynchronous.http.curl.pycurl', None)
+        patching("kombu.asynchronous.http.curl.pycurl", None)
         with pytest.raises(ImportError):
             self.Client()
 
@@ -28,7 +27,7 @@ class test_CurlClient:
         assert x.max_clients == 303
 
     def test_init(self):
-        with patch('kombu.asynchronous.http.curl.pycurl') as _pycurl:
+        with patch("kombu.asynchronous.http.curl.pycurl") as _pycurl:
             x = self.Client()
             assert x._multi is not None
             assert x._pending is not None
@@ -38,15 +37,17 @@ class test_CurlClient:
             assert len(x._curls) == x.max_clients
             assert x._timeout_check_tref
 
-            x._multi.setopt.assert_has_calls([
-                call(_pycurl.M_TIMERFUNCTION, x._set_timeout),
-                call(_pycurl.M_SOCKETFUNCTION, x._handle_socket),
-            ])
+            x._multi.setopt.assert_has_calls(
+                [
+                    call(_pycurl.M_TIMERFUNCTION, x._set_timeout),
+                    call(_pycurl.M_SOCKETFUNCTION, x._handle_socket),
+                ],
+            )
 
     def test_close(self):
-        with patch('kombu.asynchronous.http.curl.pycurl'):
+        with patch("kombu.asynchronous.http.curl.pycurl"):
             x = self.Client()
-            x._timeout_check_tref = Mock(name='timeout_check_tref')
+            x._timeout_check_tref = Mock(name="timeout_check_tref")
             x.close()
             x._timeout_check_tref.cancel.assert_called_with()
             for _curl in x._curls:
@@ -54,20 +55,20 @@ class test_CurlClient:
             x._multi.close.assert_called_with()
 
     def test_add_request(self):
-        with patch('kombu.asynchronous.http.curl.pycurl'):
+        with patch("kombu.asynchronous.http.curl.pycurl"):
             x = self.Client()
-            x._process_queue = Mock(name='_process_queue')
-            x._set_timeout = Mock(name='_set_timeout')
-            request = Mock(name='request')
+            x._process_queue = Mock(name="_process_queue")
+            x._set_timeout = Mock(name="_set_timeout")
+            request = Mock(name="request")
             x.add_request(request)
             assert request in x._pending
             x._process_queue.assert_called_with()
             x._set_timeout.assert_called_with(0)
 
     def test_handle_socket(self):
-        with patch('kombu.asynchronous.http.curl.pycurl') as _pycurl:
+        with patch("kombu.asynchronous.http.curl.pycurl") as _pycurl:
             x = self.Client()
-            fd = Mock(name='fd1')
+            fd = Mock(name="fd1")
 
             # POLL_REMOVE
             x._fds[fd] = fd
@@ -76,7 +77,7 @@ class test_CurlClient:
             x._handle_socket(_pycurl.POLL_REMOVE, fd, x._multi, None, _pycurl)
 
             # POLL_IN
-            fds = [fd, Mock(name='fd2'), Mock(name='fd3')]
+            fds = [fd, Mock(name="fd2"), Mock(name="fd3")]
             x._fds = {f: f for f in fds}
             x._handle_socket(_pycurl.POLL_IN, fd, x._multi, None, _pycurl)
             assert x._fds[fd] == READ
@@ -90,25 +91,25 @@ class test_CurlClient:
             assert x._fds[fd] == READ | WRITE
 
             # UNKNOWN EVENT
-            x._handle_socket(0xff3f, fd, x._multi, None, _pycurl)
+            x._handle_socket(0xFF3F, fd, x._multi, None, _pycurl)
 
             # FD NOT IN FDS
             x._fds.clear()
-            x._handle_socket(0xff3f, fd, x._multi, None, _pycurl)
+            x._handle_socket(0xFF3F, fd, x._multi, None, _pycurl)
 
     def test_set_timeout(self):
-        hub = Mock(name='hub')
+        hub = Mock(name="hub")
         x = self.Client(hub)
         x._set_timeout(100)
         hub.call_later.assert_called_with(100, x._timeout_check)
 
     def test_timeout_check(self):
-        with patch('kombu.asynchronous.http.curl.pycurl') as _pycurl:
-            hub = Mock(name='hub')
+        with patch("kombu.asynchronous.http.curl.pycurl") as _pycurl:
+            hub = Mock(name="hub")
             x = self.Client(hub)
-            fd1, fd2 = Mock(name='fd1'), Mock(name='fd2')
+            fd1, fd2 = Mock(name="fd1"), Mock(name="fd2")
             x._fds = {fd1: READ}
-            x._process_pending_requests = Mock(name='process_pending')
+            x._process_pending_requests = Mock(name="process_pending")
 
             def _side_effect():
                 x._fds = {fd2: WRITE}
@@ -126,32 +127,23 @@ class test_CurlClient:
             x._timeout_check(_pycurl=_pycurl)
 
     def test_on_readable_on_writeable(self):
-        with patch('kombu.asynchronous.http.curl.pycurl') as _pycurl:
+        with patch("kombu.asynchronous.http.curl.pycurl") as _pycurl:
             x = self.Client()
-            x._on_event = Mock(name='on_event')
-            fd = Mock(name='fd')
+            x._on_event = Mock(name="on_event")
+            fd = Mock(name="fd")
             x.on_readable(fd, _pycurl=_pycurl)
             x._on_event.assert_called_with(fd, _pycurl.CSELECT_IN)
             x.on_writable(fd, _pycurl=_pycurl)
             x._on_event.assert_called_with(fd, _pycurl.CSELECT_OUT)
 
     def test_setup_request_sets_proxy_when_specified(self):
-        with patch('kombu.asynchronous.http.curl.pycurl') as _pycurl:
+        with patch("kombu.asynchronous.http.curl.pycurl") as _pycurl:
             x = self.Client()
-            proxy_host = 'http://www.example.com'
-            request = Mock(
-                name='request', headers={}, auth_mode=None, proxy_host=None
-            )
-            proxied_request = Mock(
-                name='request', headers={}, auth_mode=None,
-                proxy_host=proxy_host, proxy_port=123
-            )
-            x._setup_request(
-                x.Curl, request, BytesIO(), x.Headers(), _pycurl=_pycurl
-            )
+            proxy_host = "http://www.example.com"
+            request = Mock(name="request", headers={}, auth_mode=None, proxy_host=None)
+            proxied_request = Mock(name="request", headers={}, auth_mode=None, proxy_host=proxy_host, proxy_port=123)
+            x._setup_request(x.Curl, request, BytesIO(), x.Headers(), _pycurl=_pycurl)
             with pytest.raises(AssertionError):
                 x.Curl.setopt.assert_any_call(_pycurl.PROXY, ANY)
-            x._setup_request(
-                x.Curl, proxied_request, BytesIO(), x.Headers(), _pycurl
-            )
+            x._setup_request(x.Curl, proxied_request, BytesIO(), x.Headers(), _pycurl)
             x.Curl.setopt.assert_any_call(_pycurl.PROXY, proxy_host)

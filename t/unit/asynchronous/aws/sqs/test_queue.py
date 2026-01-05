@@ -3,34 +3,38 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 import pytest
-
 from kombu.asynchronous.aws.sqs.message import AsyncMessage
 from kombu.asynchronous.aws.sqs.queue import AsyncQueue
+
 from t.mocks import PromiseMock
 
 from ..case import AWSCase
 
 
 class test_AsyncQueue(AWSCase):
-
     def setup_method(self):
-        self.conn = Mock(name='connection')
-        self.x = AsyncQueue(self.conn, '/url')
-        self.callback = PromiseMock(name='callback')
+        self.conn = Mock(name="connection")
+        self.x = AsyncQueue(self.conn, "/url")
+        self.callback = PromiseMock(name="callback")
 
     def test_message_class(self):
         assert issubclass(self.x.message_class, AsyncMessage)
 
     def test_get_attributes(self):
-        self.x.get_attributes(attributes='QueueSize', callback=self.callback)
+        self.x.get_attributes(attributes="QueueSize", callback=self.callback)
         self.x.connection.get_queue_attributes.assert_called_with(
-            self.x, 'QueueSize', self.callback,
+            self.x,
+            "QueueSize",
+            self.callback,
         )
 
     def test_set_attribute(self):
-        self.x.set_attribute('key', 'value', callback=self.callback)
+        self.x.set_attribute("key", "value", callback=self.callback)
         self.x.connection.set_queue_attribute.assert_called_with(
-            self.x, 'key', 'value', self.callback,
+            self.x,
+            "key",
+            "value",
+            self.callback,
         )
 
     def test_get_timeout(self):
@@ -38,10 +42,12 @@ class test_AsyncQueue(AWSCase):
         self.x.connection.get_queue_attributes.assert_called()
         on_ready = self.x.connection.get_queue_attributes.call_args[0][2]
         self.x.connection.get_queue_attributes.assert_called_with(
-            self.x, 'VisibilityTimeout', on_ready,
+            self.x,
+            "VisibilityTimeout",
+            on_ready,
         )
 
-        on_ready({'VisibilityTimeout': '303'})
+        on_ready({"VisibilityTimeout": "303"})
         self.callback.assert_called_with(303)
 
     def test_set_timeout(self):
@@ -49,7 +55,10 @@ class test_AsyncQueue(AWSCase):
         self.x.connection.set_queue_attribute.assert_called()
         on_ready = self.x.connection.set_queue_attribute.call_args[0][3]
         self.x.connection.set_queue_attribute.assert_called_with(
-            self.x, 'VisibilityTimeout', 808, on_ready,
+            self.x,
+            "VisibilityTimeout",
+            808,
+            on_ready,
         )
         on_ready(808)
         self.callback.assert_called_with(808)
@@ -60,93 +69,118 @@ class test_AsyncQueue(AWSCase):
 
     def test_add_permission(self):
         self.x.add_permission(
-            'label', 'accid', 'action', callback=self.callback,
+            "label",
+            "accid",
+            "action",
+            callback=self.callback,
         )
         self.x.connection.add_permission.assert_called_with(
-            self.x, 'label', 'accid', 'action', self.callback,
+            self.x,
+            "label",
+            "accid",
+            "action",
+            self.callback,
         )
 
     def test_remove_permission(self):
-        self.x.remove_permission('label', callback=self.callback)
+        self.x.remove_permission("label", callback=self.callback)
         self.x.connection.remove_permission.assert_called_with(
-            self.x, 'label', self.callback,
+            self.x,
+            "label",
+            self.callback,
         )
 
     def test_read(self):
         self.x.read(visibility_timeout=909, callback=self.callback)
         self.x.connection.receive_message.assert_called()
-        on_ready = self.x.connection.receive_message.call_args[1]['callback']
+        on_ready = self.x.connection.receive_message.call_args[1]["callback"]
         self.x.connection.receive_message.assert_called_with(
-            self.x, number_messages=1, visibility_timeout=909,
-            attributes=None, wait_time_seconds=None, callback=on_ready,
+            self.x,
+            number_messages=1,
+            visibility_timeout=909,
+            attributes=None,
+            wait_time_seconds=None,
+            callback=on_ready,
         )
 
-        messages = [Mock(name='message1')]
+        messages = [Mock(name="message1")]
         on_ready(messages)
 
         self.callback.assert_called_with(messages[0])
 
     def MockMessage(self, id, md5):
-        m = Mock(name=f'Message-{id}')
+        m = Mock(name=f"Message-{id}")
         m.id = id
         m.md5 = md5
         return m
 
     def test_write(self):
-        message = self.MockMessage('id1', 'digest1')
+        message = self.MockMessage("id1", "digest1")
         self.x.write(message, delay_seconds=303, callback=self.callback)
         self.x.connection.send_message.assert_called()
-        on_ready = self.x.connection.send_message.call_args[1]['callback']
+        on_ready = self.x.connection.send_message.call_args[1]["callback"]
         self.x.connection.send_message.assert_called_with(
-            self.x, message.get_body_encoded(), 303,
+            self.x,
+            message.get_body_encoded(),
+            303,
             callback=on_ready,
         )
 
-        new_message = self.MockMessage('id2', 'digest2')
+        new_message = self.MockMessage("id2", "digest2")
         on_ready(new_message)
-        assert message.id == 'id2'
-        assert message.md5 == 'digest2'
+        assert message.id == "id2"
+        assert message.md5 == "digest2"
 
     def test_write_batch(self):
-        messages = [('id1', 'A', 0), ('id2', 'B', 303)]
+        messages = [("id1", "A", 0), ("id2", "B", 303)]
         self.x.write_batch(messages, callback=self.callback)
         self.x.connection.send_message_batch.assert_called_with(
-            self.x, messages, callback=self.callback,
+            self.x,
+            messages,
+            callback=self.callback,
         )
 
     def test_delete_message(self):
-        message = self.MockMessage('id1', 'digest1')
+        message = self.MockMessage("id1", "digest1")
         self.x.delete_message(message, callback=self.callback)
         self.x.connection.delete_message.assert_called_with(
-            self.x, message, self.callback,
+            self.x,
+            message,
+            self.callback,
         )
 
     def test_delete_message_batch(self):
         messages = [
-            self.MockMessage('id1', 'r1'),
-            self.MockMessage('id2', 'r2'),
+            self.MockMessage("id1", "r1"),
+            self.MockMessage("id2", "r2"),
         ]
         self.x.delete_message_batch(messages, callback=self.callback)
         self.x.connection.delete_message_batch.assert_called_with(
-            self.x, messages, callback=self.callback,
+            self.x,
+            messages,
+            callback=self.callback,
         )
 
     def test_change_message_visibility_batch(self):
         messages = [
-            (self.MockMessage('id1', 'r1'), 303),
-            (self.MockMessage('id2', 'r2'), 909),
+            (self.MockMessage("id1", "r1"), 303),
+            (self.MockMessage("id2", "r2"), 909),
         ]
         self.x.change_message_visibility_batch(
-            messages, callback=self.callback,
+            messages,
+            callback=self.callback,
         )
         self.x.connection.change_message_visibility_batch.assert_called_with(
-            self.x, messages, callback=self.callback,
+            self.x,
+            messages,
+            callback=self.callback,
         )
 
     def test_delete(self):
         self.x.delete(callback=self.callback)
         self.x.connection.delete_queue.assert_called_with(
-            self.x, callback=self.callback,
+            self.x,
+            callback=self.callback,
         )
 
     def test_count(self):
@@ -154,10 +188,12 @@ class test_AsyncQueue(AWSCase):
         self.x.connection.get_queue_attributes.assert_called()
         on_ready = self.x.connection.get_queue_attributes.call_args[0][2]
         self.x.connection.get_queue_attributes.assert_called_with(
-            self.x, 'ApproximateNumberOfMessages', on_ready,
+            self.x,
+            "ApproximateNumberOfMessages",
+            on_ready,
         )
 
-        on_ready({'ApproximateNumberOfMessages': '909'})
+        on_ready({"ApproximateNumberOfMessages": "909"})
         self.callback.assert_called_with(909)
 
     def test_interface__count_slow(self):

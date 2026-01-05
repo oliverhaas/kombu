@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import socket
 from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
@@ -8,9 +7,17 @@ import pytest
 from amqp import RecoverableConnectionError
 
 from kombu import common
-from kombu.common import (PREFETCH_COUNT_MAX, Broadcast, QoS, collect_replies,
-                          declaration_cached, generate_oid, ignore_errors,
-                          maybe_declare, send_reply)
+from kombu.common import (
+    PREFETCH_COUNT_MAX,
+    Broadcast,
+    QoS,
+    collect_replies,
+    declaration_cached,
+    generate_oid,
+    ignore_errors,
+    maybe_declare,
+    send_reply,
+)
 from t.mocks import ContextMock, MockPool
 
 if TYPE_CHECKING:
@@ -23,16 +30,15 @@ def test_generate_oid():
     instance = Mock()
 
     args = (1, 1001, 2001, id(instance))
-    ent = '%x-%x-%x-%x' % args
+    ent = "%x-%x-%x-%x" % args
 
-    with patch('kombu.common.uuid3') as mock_uuid3, \
-            patch('kombu.common.uuid5') as mock_uuid5:
+    with patch("kombu.common.uuid3") as mock_uuid3, patch("kombu.common.uuid5") as mock_uuid5:
         mock_uuid3.side_effect = ValueError
-        mock_uuid3.return_value = 'uuid3-6ba7b812-9dad-11d1-80b4'
-        mock_uuid5.return_value = 'uuid5-6ba7b812-9dad-11d1-80b4'
+        mock_uuid3.return_value = "uuid3-6ba7b812-9dad-11d1-80b4"
+        mock_uuid5.return_value = "uuid5-6ba7b812-9dad-11d1-80b4"
         oid = generate_oid(1, 1001, 2001, instance)
         mock_uuid5.assert_called_once_with(NAMESPACE_OID, ent)
-        assert oid == 'uuid5-6ba7b812-9dad-11d1-80b4'
+        assert oid == "uuid5-6ba7b812-9dad-11d1-80b4"
 
 
 def test_ignore_errors():
@@ -50,58 +56,50 @@ def test_ignore_errors():
 
     connection.channel_errors = connection.connection_errors = ()
 
-    with pytest.raises(KeyError):
-        with ignore_errors(connection):
-            raise KeyError()
+    with pytest.raises(KeyError), ignore_errors(connection):
+        raise KeyError()
 
 
 class test_declaration_cached:
-
     def test_when_cached(self):
         chan = Mock()
-        chan.connection.client.declared_entities = ['foo']
-        assert declaration_cached('foo', chan)
+        chan.connection.client.declared_entities = ["foo"]
+        assert declaration_cached("foo", chan)
 
     def test_when_not_cached(self):
         chan = Mock()
-        chan.connection.client.declared_entities = ['bar']
-        assert not declaration_cached('foo', chan)
+        chan.connection.client.declared_entities = ["bar"]
+        assert not declaration_cached("foo", chan)
 
 
 class test_Broadcast:
-
     def test_arguments(self):
-        with patch('kombu.common.uuid',
-                   return_value='test') as uuid_mock:
-            q = Broadcast(name='test_Broadcast')
+        with patch("kombu.common.uuid", return_value="test") as uuid_mock:
+            q = Broadcast(name="test_Broadcast")
             uuid_mock.assert_called_with()
-            assert q.name == 'bcast.test'
-            assert q.alias == 'test_Broadcast'
+            assert q.name == "bcast.test"
+            assert q.alias == "test_Broadcast"
             assert q.auto_delete
-            assert q.exchange.name == 'test_Broadcast'
-            assert q.exchange.type == 'fanout'
+            assert q.exchange.name == "test_Broadcast"
+            assert q.exchange.type == "fanout"
 
-        q = Broadcast('test_Broadcast', 'explicit_queue_name')
-        assert q.name == 'explicit_queue_name'
-        assert q.exchange.name == 'test_Broadcast'
+        q = Broadcast("test_Broadcast", "explicit_queue_name")
+        assert q.name == "explicit_queue_name"
+        assert q.exchange.name == "test_Broadcast"
 
         q2 = q(Mock())
         assert q2.name == q.name
 
-        with patch('kombu.common.uuid',
-                   return_value='test') as uuid_mock:
-            q = Broadcast('test_Broadcast',
-                          'explicit_queue_name',
-                          unique=True)
+        with patch("kombu.common.uuid", return_value="test") as uuid_mock:
+            q = Broadcast("test_Broadcast", "explicit_queue_name", unique=True)
             uuid_mock.assert_called_with()
-            assert q.name == 'explicit_queue_name.test'
+            assert q.name == "explicit_queue_name.test"
 
             q2 = q(Mock())
-            assert q2.name.split('.')[0] == q.name.split('.')[0]
+            assert q2.name.split(".")[0] == q.name.split(".")[0]
 
 
 class test_maybe_declare:
-
     def _get_mock_channel(self):
         # Given: A mock Channel with mock'd connection/client/entities
         channel = Mock()
@@ -118,6 +116,7 @@ class test_maybe_declare:
             entity.channel = channel
             entity.is_bound = True
             return entity
+
         entity.bind = _bind_entity
         return entity
 
@@ -125,8 +124,7 @@ class test_maybe_declare:
         # Given: A mock Channel and mock entity
         channel = self._get_mock_channel()
         # Given: A mock Entity that is already bound
-        entity = self._get_mock_entity(
-            is_bound=True, can_cache_declaration=True)
+        entity = self._get_mock_entity(is_bound=True, can_cache_declaration=True)
         entity.channel = channel
         entity.auto_delete = False
         assert entity.is_bound, "Expected entity is bound to begin this test."
@@ -171,11 +169,11 @@ class test_maybe_declare:
 
         # Given: A retry policy
         sample_retry_policy = {
-            'interval_start': 0,
-            'interval_max': 1,
-            'max_retries': 3,
-            'interval_step': 0.2,
-            'errback': lambda x: "Called test errback retry policy",
+            "interval_start": 0,
+            "interval_max": 1,
+            "max_retries": 3,
+            "interval_step": 0.2,
+            "errback": lambda x: "Called test errback retry policy",
         }
 
         # When: calling maybe_declare with retry enabled
@@ -188,8 +186,7 @@ class test_maybe_declare:
         # Given: A mock Channel and mock entity
         channel = self._get_mock_channel()
         # Given: A mock Entity that is already bound
-        entity = self._get_mock_entity(
-            is_bound=True, can_cache_declaration=True)
+        entity = self._get_mock_entity(is_bound=True, can_cache_declaration=True)
         entity.channel = channel
         assert entity.is_bound, "Expected entity is bound to begin this test."
         # When calling maybe_declare with retry enabled (default policy)
@@ -201,8 +198,7 @@ class test_maybe_declare:
         # Given: A mock Channel and mock entity
         channel = self._get_mock_channel()
         # Given: A mock Entity that is already bound
-        entity = self._get_mock_entity(
-            is_bound=True, can_cache_declaration=True)
+        entity = self._get_mock_entity(is_bound=True, can_cache_declaration=True)
         entity.channel = channel
         assert entity.is_bound, "Expected entity is bound to begin this test."
         # When: Entity channel connection has gone away
@@ -214,13 +210,11 @@ class test_maybe_declare:
 
 
 class test_replies:
-
     def test_send_reply(self):
         req = Mock()
-        req.content_type = 'application/json'
-        req.content_encoding = 'binary'
-        req.properties = {'reply_to': 'hello',
-                          'correlation_id': 'world'}
+        req.content_type = "application/json"
+        req.content_encoding = "binary"
+        req.properties = {"reply_to": "hello", "correlation_id": "world"}
         channel = Mock()
         exchange = Mock()
         exchange.is_bound = True
@@ -228,22 +222,22 @@ class test_replies:
         producer = Mock()
         producer.channel = channel
         producer.channel.connection.client.declared_entities = set()
-        send_reply(exchange, req, {'hello': 'world'}, producer)
+        send_reply(exchange, req, {"hello": "world"}, producer)
 
         assert producer.publish.call_count
         args = producer.publish.call_args
-        assert args[0][0] == {'hello': 'world'}
+        assert args[0][0] == {"hello": "world"}
         assert args[1] == {
-            'exchange': exchange,
-            'routing_key': 'hello',
-            'correlation_id': 'world',
-            'serializer': 'json',
-            'retry': False,
-            'retry_policy': None,
-            'content_encoding': 'binary',
+            "exchange": exchange,
+            "routing_key": "hello",
+            "correlation_id": "world",
+            "serializer": "json",
+            "retry": False,
+            "retry_policy": None,
+            "content_encoding": "binary",
         }
 
-    @patch('kombu.common.itermessages')
+    @patch("kombu.common.itermessages")
     def test_collect_replies_with_ack(self, itermessages):
         conn, channel, queue = Mock(), Mock(), Mock()
         body, message = Mock(), Mock()
@@ -259,7 +253,7 @@ class test_replies:
 
         channel.after_reply_message_received.assert_called_with(queue.name)
 
-    @patch('kombu.common.itermessages')
+    @patch("kombu.common.itermessages")
     def test_collect_replies_no_ack(self, itermessages):
         conn, channel, queue = Mock(), Mock(), Mock()
         body, message = Mock(), Mock()
@@ -270,7 +264,7 @@ class test_replies:
         itermessages.assert_called_with(conn, channel, queue, no_ack=True)
         message.ack.assert_not_called()
 
-    @patch('kombu.common.itermessages')
+    @patch("kombu.common.itermessages")
     def test_collect_replies_no_replies(self, itermessages):
         conn, channel, queue = Mock(), Mock(), Mock()
         itermessages.return_value = []
@@ -281,10 +275,9 @@ class test_replies:
 
 
 class test_insured:
-
-    @patch('kombu.common.logger')
+    @patch("kombu.common.logger")
     def test_ensure_errback(self, logger):
-        common._ensure_errback('foo', 30)
+        common._ensure_errback("foo", 30)
         logger.error.assert_called()
 
     def test_revive_connection(self):
@@ -295,7 +288,7 @@ class test_insured:
 
         common.revive_connection(Mock(), channel, None)
 
-    def get_insured_mocks(self, insured_returns=('works', 'ignored')):
+    def get_insured_mocks(self, insured_returns=("works", "ignored")):
         conn = ContextMock()
         pool = MockPool(conn)
         fun = Mock()
@@ -306,8 +299,8 @@ class test_insured:
     def test_insured(self):
         conn, pool, fun, insured = self.get_insured_mocks()
 
-        ret = common.insured(pool, fun, (2, 2), {'foo': 'bar'})
-        assert ret == 'works'
+        ret = common.insured(pool, fun, (2, 2), {"foo": "bar"})
+        assert ret == "works"
         conn.ensure_connection.assert_called_with(
             errback=common._ensure_errback,
         )
@@ -315,20 +308,19 @@ class test_insured:
         insured.assert_called()
         i_args, i_kwargs = insured.call_args
         assert i_args == (2, 2)
-        assert i_kwargs == {'foo': 'bar', 'connection': conn}
+        assert i_kwargs == {"foo": "bar", "connection": conn}
 
         conn.autoretry.assert_called()
         ar_args, ar_kwargs = conn.autoretry.call_args
         assert ar_args == (fun, conn.default_channel)
-        assert ar_kwargs.get('on_revive')
-        assert ar_kwargs.get('errback')
+        assert ar_kwargs.get("on_revive")
+        assert ar_kwargs.get("errback")
 
     def test_insured_custom_errback(self):
         conn, pool, fun, insured = self.get_insured_mocks()
 
         custom_errback = Mock()
-        common.insured(pool, fun, (2, 2), {'foo': 'bar'},
-                       errback=custom_errback)
+        common.insured(pool, fun, (2, 2), {"foo": "bar"}, errback=custom_errback)
         conn.ensure_connection.assert_called_with(errback=custom_errback)
 
 
@@ -348,32 +340,31 @@ class MockConsumer:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: TracebackType | None
+        exc_tb: TracebackType | None,
     ) -> None:
         self.consumers.discard(self)
 
 
 class test_itermessages:
-
     class MockConnection:
         should_raise_timeout = False
 
         def drain_events(self, **kwargs):
             if self.should_raise_timeout:
-                raise socket.timeout()
+                raise TimeoutError()
             for consumer in MockConsumer.consumers:
                 for callback in consumer.callbacks:
-                    callback('body', 'message')
+                    callback("body", "message")
 
     def test_default(self):
         conn = self.MockConnection()
         channel = Mock()
         channel.connection.client = conn
         conn.Consumer = MockConsumer
-        it = common.itermessages(conn, channel, 'q', limit=1)
+        it = common.itermessages(conn, channel, "q", limit=1)
 
         ret = next(it)
-        assert ret == ('body', 'message')
+        assert ret == ("body", "message")
 
         with pytest.raises(StopIteration):
             next(it)
@@ -384,26 +375,25 @@ class test_itermessages:
         channel = Mock()
         channel.connection.client = conn
         conn.Consumer = MockConsumer
-        it = common.itermessages(conn, channel, 'q', limit=1)
+        it = common.itermessages(conn, channel, "q", limit=1)
 
         with pytest.raises(StopIteration):
             next(it)
 
-    @patch('kombu.common.deque')
+    @patch("kombu.common.deque")
     def test_when_raises_IndexError(self, deque):
         deque_instance = deque.return_value = Mock()
         deque_instance.popleft.side_effect = IndexError()
         conn = self.MockConnection()
         channel = Mock()
         conn.Consumer = MockConsumer
-        it = common.itermessages(conn, channel, 'q', limit=1)
+        it = common.itermessages(conn, channel, "q", limit=1)
 
         with pytest.raises(StopIteration):
             next(it)
 
 
 class test_QoS:
-
     class _QoS(QoS):
         def __init__(self, value):
             self.value = value
@@ -413,7 +403,7 @@ class test_QoS:
             return value
 
     def test_qos_exceeds_16bit(self):
-        with patch('kombu.common.logger') as logger:
+        with patch("kombu.common.logger") as logger:
             callback = Mock()
             qos = QoS(callback, 10)
             qos.prev = 100
@@ -453,6 +443,7 @@ class test_QoS:
 
         def threaded(funs):
             from threading import Thread
+
             threads = [Thread(target=fun) for fun in funs]
             for thread in threads:
                 thread.start()
@@ -492,7 +483,7 @@ class test_QoS:
         qos.decrement_eventually()
         assert qos.value == 8
         mconsumer.qos.assert_called_with(prefetch_count=9)
-        assert {'prefetch_count': 9} in mconsumer.qos.call_args
+        assert {"prefetch_count": 9} in mconsumer.qos.call_args
 
         # Does not decrement 0 value
         qos.value = 0
@@ -576,6 +567,7 @@ class test_QoS:
                 qos.increment_eventually()
 
         from threading import Thread
+
         threads = [Thread(target=increment_to_limit) for _ in range(5)]
         for thread in threads:
             thread.start()

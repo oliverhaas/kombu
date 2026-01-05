@@ -8,21 +8,14 @@ from kombu import Connection, Consumer, Exchange, Producer, Queue
 
 
 class test_PyroTransport:
-
     def setup_method(self):
-        self.c = Connection(transport='pyro', virtual_host="kombu.broker")
-        self.e = Exchange('test_transport_pyro')
-        self.q = Queue('test_transport_pyro',
-                       exchange=self.e,
-                       routing_key='test_transport_pyro')
-        self.q2 = Queue('test_transport_pyro2',
-                        exchange=self.e,
-                        routing_key='test_transport_pyro2')
-        self.fanout = Exchange('test_transport_pyro_fanout', type='fanout')
-        self.q3 = Queue('test_transport_pyro_fanout1',
-                        exchange=self.fanout)
-        self.q4 = Queue('test_transport_pyro_fanout2',
-                        exchange=self.fanout)
+        self.c = Connection(transport="pyro", virtual_host="kombu.broker")
+        self.e = Exchange("test_transport_pyro")
+        self.q = Queue("test_transport_pyro", exchange=self.e, routing_key="test_transport_pyro")
+        self.q2 = Queue("test_transport_pyro2", exchange=self.e, routing_key="test_transport_pyro2")
+        self.fanout = Exchange("test_transport_pyro_fanout", type="fanout")
+        self.q3 = Queue("test_transport_pyro_fanout1", exchange=self.fanout)
+        self.q4 = Queue("test_transport_pyro_fanout2", exchange=self.fanout)
 
     def test_driver_version(self):
         assert self.c.transport.driver_version()
@@ -34,7 +27,7 @@ class test_PyroTransport:
         consumer = Consumer(channel, self.q, no_ack=True)
 
         for i in range(10):
-            producer.publish({'foo': i}, routing_key='test_transport_pyro')
+            producer.publish({"foo": i}, routing_key="test_transport_pyro")
 
         _received = []
 
@@ -71,7 +64,7 @@ class test_PyroTransport:
         consumer = self.c.Consumer([self.q2])
 
         producer.publish(
-            {'hello': 'world'},
+            {"hello": "world"},
             declare=consumer.queues,
             routing_key=self.q2.routing_key,
             exchange=self.q2.exchange,
@@ -79,9 +72,8 @@ class test_PyroTransport:
         message = consumer.queues[0].get()._raw
 
         class Cycle:
-
             def get(self, callback, timeout=None):
-                return (message, 'foo'), c1
+                return (message, "foo"), c1
 
         self.c.transport.cycle = Cycle()
         self.c.drain_events()
@@ -89,6 +81,6 @@ class test_PyroTransport:
     @pytest.mark.skip("requires running Pyro nameserver and Kombu Broker")
     def test_queue_for(self):
         chan = self.c.channel()
-        x = chan._queue_for('foo')
+        x = chan._queue_for("foo")
         assert x
-        assert chan._queue_for('foo') is x
+        assert chan._queue_for("foo") is x

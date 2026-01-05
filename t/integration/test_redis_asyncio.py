@@ -10,7 +10,7 @@ from kombu import Connection, Exchange, Queue
 
 pytestmark = pytest.mark.asyncio(loop_scope="function")
 
-REDIS_URL = 'redis://localhost:6379'
+REDIS_URL = "redis://localhost:6379"
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ class TestChannel:
 
     async def test_publish_and_get(self, channel):
         """Test publish and get message."""
-        queue_name = 'test_publish_and_get'
+        queue_name = "test_publish_and_get"
 
         # Clean up first
         await channel.queue_purge(queue_name)
@@ -67,28 +67,28 @@ class TestChannel:
             b'{"body": "hello", "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
-        await channel.publish(message, exchange='', routing_key=queue_name)
+        await channel.publish(message, exchange="", routing_key=queue_name)
 
         # Get the message
         msg = await channel.get(queue_name, no_ack=True)
         assert msg is not None
-        assert msg.payload == 'hello'
+        assert msg.payload == "hello"
 
         # Clean up
         await channel.queue_purge(queue_name)
 
     async def test_queue_purge(self, channel):
         """Test queue purge."""
-        queue_name = 'test_queue_purge'
+        queue_name = "test_queue_purge"
 
         # Publish some messages
         message = (
             b'{"body": "test", "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
-        await channel.publish(message, exchange='', routing_key=queue_name)
-        await channel.publish(message, exchange='', routing_key=queue_name)
-        await channel.publish(message, exchange='', routing_key=queue_name)
+        await channel.publish(message, exchange="", routing_key=queue_name)
+        await channel.publish(message, exchange="", routing_key=queue_name)
+        await channel.publish(message, exchange="", routing_key=queue_name)
 
         # Purge
         count = await channel.queue_purge(queue_name)
@@ -96,7 +96,7 @@ class TestChannel:
 
     async def test_ack_message(self, channel):
         """Test message acknowledgment."""
-        queue_name = 'test_ack_message'
+        queue_name = "test_ack_message"
         await channel.queue_purge(queue_name)
 
         # Publish
@@ -104,7 +104,7 @@ class TestChannel:
             b'{"body": "ack_test", "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
-        await channel.publish(message, exchange='', routing_key=queue_name)
+        await channel.publish(message, exchange="", routing_key=queue_name)
 
         # Get without auto-ack
         msg = await channel.get(queue_name, no_ack=False)
@@ -124,7 +124,7 @@ class TestChannel:
 
     async def test_reject_message(self, channel):
         """Test message rejection with requeue."""
-        queue_name = 'test_reject_message'
+        queue_name = "test_reject_message"
         await channel.queue_purge(queue_name)
 
         # Publish
@@ -132,7 +132,7 @@ class TestChannel:
             b'{"body": "reject_test", "content-type": "application/json", '
             b'"content-encoding": "utf-8", "properties": {}, "headers": {}}'
         )
-        await channel.publish(message, exchange='', routing_key=queue_name)
+        await channel.publish(message, exchange="", routing_key=queue_name)
 
         # Get without auto-ack
         msg = await channel.get(queue_name, no_ack=False)
@@ -153,39 +153,39 @@ class TestProducer:
 
     async def test_publish(self, connection):
         """Test Producer publish."""
-        queue_name = 'test_producer_publish'
+        queue_name = "test_producer_publish"
         channel = await connection.channel()
         await channel.queue_purge(queue_name)
 
         async with connection.Producer() as producer:
             await producer.publish(
-                {'hello': 'world'},
+                {"hello": "world"},
                 routing_key=queue_name,
             )
 
         # Verify message
         msg = await channel.get(queue_name, no_ack=True)
         assert msg is not None
-        assert msg.payload == {'hello': 'world'}
+        assert msg.payload == {"hello": "world"}
 
         await channel.queue_purge(queue_name)
 
     async def test_publish_with_serializer(self, connection):
         """Test Producer with different serializer."""
-        queue_name = 'test_producer_serializer'
+        queue_name = "test_producer_serializer"
         channel = await connection.channel()
         await channel.queue_purge(queue_name)
 
-        async with connection.Producer(serializer='json') as producer:
+        async with connection.Producer(serializer="json") as producer:
             await producer.publish(
-                {'key': 'value', 'number': 42},
+                {"key": "value", "number": 42},
                 routing_key=queue_name,
             )
 
         msg = await channel.get(queue_name, no_ack=True)
         assert msg is not None
-        assert msg.payload['key'] == 'value'
-        assert msg.payload['number'] == 42
+        assert msg.payload["key"] == "value"
+        assert msg.payload["number"] == 42
 
         await channel.queue_purge(queue_name)
 
@@ -195,7 +195,7 @@ class TestConsumer:
 
     async def test_consume(self, connection):
         """Test Consumer consume."""
-        queue_name = 'test_consumer_consume'
+        queue_name = "test_consumer_consume"
         channel = await connection.channel()
         await channel.queue_purge(queue_name)
 
@@ -208,7 +208,7 @@ class TestConsumer:
 
         # Publish first
         async with connection.Producer() as producer:
-            await producer.publish({'test': 'message'}, routing_key=queue_name)
+            await producer.publish({"test": "message"}, routing_key=queue_name)
 
         # Consume
         async with connection.Consumer([queue], callbacks=[callback]):
@@ -222,7 +222,7 @@ class TestConsumer:
                 pass  # Timeout is expected
 
         assert len(received) == 1
-        assert received[0] == {'test': 'message'}
+        assert received[0] == {"test": "message"}
 
         await channel.queue_purge(queue_name)
 
@@ -232,19 +232,19 @@ class TestSimpleQueue:
 
     async def test_put_and_get(self, connection):
         """Test SimpleQueue put and get."""
-        async with connection.SimpleQueue('test_simple_queue') as queue:
-            await queue.put({'hello': 'simple'})
+        async with connection.SimpleQueue("test_simple_queue") as queue:
+            await queue.put({"hello": "simple"})
 
             msg = await queue.get(timeout=5)
             assert msg is not None
-            assert msg.payload == {'hello': 'simple'}
+            assert msg.payload == {"hello": "simple"}
             await msg.ack()
 
             await queue.clear()
 
     async def test_get_nowait_empty(self, connection):
         """Test get_nowait on empty queue."""
-        async with connection.SimpleQueue('test_simple_empty') as queue:
+        async with connection.SimpleQueue("test_simple_empty") as queue:
             await queue.clear()
 
             with pytest.raises(queue.Empty):
@@ -252,17 +252,17 @@ class TestSimpleQueue:
 
     async def test_multiple_messages(self, connection):
         """Test multiple messages through SimpleQueue."""
-        async with connection.SimpleQueue('test_simple_multi') as queue:
+        async with connection.SimpleQueue("test_simple_multi") as queue:
             await queue.clear()
 
             # Put multiple messages
             for i in range(5):
-                await queue.put({'index': i})
+                await queue.put({"index": i})
 
             # Get all messages
             for i in range(5):
                 msg = await queue.get(timeout=5)
-                assert msg.payload['index'] == i
+                assert msg.payload["index"] == i
                 await msg.ack()
 
             await queue.clear()
@@ -273,46 +273,46 @@ class TestExchangeTypes:
 
     async def test_direct_exchange(self, connection):
         """Test direct exchange routing."""
-        queue_name = 'test_direct_exchange_queue'
-        exchange_name = 'test_direct_exchange'
+        queue_name = "test_direct_exchange_queue"
+        exchange_name = "test_direct_exchange"
 
         channel = await connection.channel()
         await channel.queue_purge(queue_name)
 
         # Declare exchange and queue
-        exchange = Exchange(exchange_name, type='direct')
+        exchange = Exchange(exchange_name, type="direct")
         await channel.declare_exchange(exchange)
 
         # Bind queue to exchange
         await channel.queue_bind(
             queue=queue_name,
             exchange=exchange_name,
-            routing_key='test.key',
+            routing_key="test.key",
         )
 
         # Publish to exchange
         async with connection.Producer(exchange=exchange) as producer:
             await producer.publish(
-                {'data': 'direct'},
-                routing_key='test.key',
+                {"data": "direct"},
+                routing_key="test.key",
             )
 
         # Should receive message
         msg = await channel.get(queue_name, no_ack=True)
         assert msg is not None
-        assert msg.payload['data'] == 'direct'
+        assert msg.payload["data"] == "direct"
 
         await channel.queue_purge(queue_name)
 
     async def test_topic_exchange_pattern_matching(self, channel):
         """Test topic exchange pattern matching."""
         # Test the pattern matching logic
-        assert channel._topic_match('user.created', 'user.*') is True
-        assert channel._topic_match('user.created', 'user.#') is True
-        assert channel._topic_match('user.profile.updated', 'user.#') is True
-        assert channel._topic_match('user.created', 'order.*') is False
-        assert channel._topic_match('user.profile.updated', 'user.*') is False
+        assert channel._topic_match("user.created", "user.*") is True
+        assert channel._topic_match("user.created", "user.#") is True
+        assert channel._topic_match("user.profile.updated", "user.#") is True
+        assert channel._topic_match("user.created", "order.*") is False
+        assert channel._topic_match("user.profile.updated", "user.*") is False
 
 
-if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

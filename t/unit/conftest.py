@@ -17,7 +17,7 @@ _SIO_init = io.StringIO.__init__
 sentinel = object()
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def multiprocessing_workaround(request):
     yield
     # Workaround for multiprocessing bug where logging
@@ -25,14 +25,13 @@ def multiprocessing_workaround(request):
     canceled = set()
     try:
         import multiprocessing.util
+
         canceled.add(multiprocessing.util._exit_function)
     except (AttributeError, ImportError):
         pass
 
     try:
-        atexit._exithandlers[:] = [
-            e for e in atexit._exithandlers if e[0] not in canceled
-        ]
+        atexit._exithandlers[:] = [e for e in atexit._exithandlers if e[0] not in canceled]
     except AttributeError:  # pragma: no cover
         pass  # Py3 missing _exithandlers
 
@@ -40,6 +39,7 @@ def multiprocessing_workaround(request):
 def zzz_reset_memory_transport_state():
     yield
     from kombu.transport import memory
+
     memory.Transport.state.clear()
 
 
@@ -52,6 +52,7 @@ def test_cases_has_patching(request, patching):
 @pytest.fixture
 def hub(request):
     from kombu.asynchronous import Hub, get_event_loop, set_event_loop
+
     _prev_hub = get_event_loop()
     hub = Hub()
     set_event_loop(hub)
@@ -63,25 +64,24 @@ def hub(request):
 
 
 def find_distribution_modules(name=__name__, file=__file__):
-    current_dist_depth = len(name.split('.')) - 1
-    current_dist = os.path.join(os.path.dirname(file),
-                                *([os.pardir] * current_dist_depth))
+    current_dist_depth = len(name.split(".")) - 1
+    current_dist = os.path.join(os.path.dirname(file), *([os.pardir] * current_dist_depth))
     abs = os.path.abspath(current_dist)
     dist_name = os.path.basename(abs)
 
     for dirpath, dirnames, filenames in os.walk(abs):
-        package = (dist_name + dirpath[len(abs):]).replace('/', '.')
-        if '__init__.py' in filenames:
+        package = (dist_name + dirpath[len(abs) :]).replace("/", ".")
+        if "__init__.py" in filenames:
             yield package
             for filename in filenames:
-                if filename.endswith('.py') and filename != '__init__.py':
-                    yield '.'.join([package, filename])[:-3]
+                if filename.endswith(".py") and filename != "__init__.py":
+                    yield ".".join([package, filename])[:-3]
 
 
 def import_all_modules(name=__name__, file=__file__, skip=[]):
     for module in find_distribution_modules(name, file):
         if module not in skip:
-            print(f'preimporting {module!r} for coverage...')
+            print(f"preimporting {module!r} for coverage...")
             try:
                 __import__(module)
             except (ImportError, VersionMismatch, AttributeError):
@@ -89,11 +89,10 @@ def import_all_modules(name=__name__, file=__file__, skip=[]):
 
 
 def is_in_coverage():
-    return (os.environ.get('COVER_ALL_MODULES') or
-            any('--cov' in arg for arg in sys.argv))
+    return os.environ.get("COVER_ALL_MODULES") or any("--cov" in arg for arg in sys.argv)
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def cover_all_modules():
     # so coverage sees all our modules.
     if is_in_coverage():
@@ -101,7 +100,6 @@ def cover_all_modules():
 
 
 class WhateverIO(io.StringIO):
-
     def __init__(self, v=None, *a, **kw):
         _SIO_init(self, v.decode() if isinstance(v, bytes) else v, *a, **kw)
 
@@ -120,7 +118,6 @@ def module_name(s):
 
 
 class _patching:
-
     def __init__(self, monkeypatch, request):
         self.monkeypatch = monkeypatch
         self.request = request
@@ -128,15 +125,14 @@ class _patching:
     def __getattr__(self, name):
         return getattr(self.monkeypatch, name)
 
-    def __call__(self, path, value=sentinel, name=None,
-                 new=MagicMock, **kwargs):
+    def __call__(self, path, value=sentinel, name=None, new=MagicMock, **kwargs):
         value = self._value_or_mock(value, new, name, path, **kwargs)
         self.monkeypatch.setattr(path, value)
         return value
 
     def _value_or_mock(self, value, new, name, path, **kwargs):
         if value is sentinel:
-            value = new(name=name or path.rpartition('.')[2])
+            value = new(name=name or path.rpartition(".")[2])
         for k, v in kwargs.items():
             setattr(value, k, v)
         return value
@@ -155,7 +151,6 @@ class _patching:
 
 
 class _stdouts:
-
     def __init__(self, stdout, stderr):
         self.stdout = stdout
         self.stderr = stderr
@@ -216,8 +211,7 @@ def sleepdeprived(request):
         >>> def test_foo(self, patched_module):
         >>>     pass
     """
-    module = request.node.get_closest_marker(
-            "sleepdeprived_patched_module").args[0]
+    module = request.node.get_closest_marker("sleepdeprived_patched_module").args[0]
     old_sleep, module.sleep = module.sleep, noop
     try:
         yield
@@ -250,8 +244,8 @@ def module_exists(request):
             old_modules.append(sys.modules[module.__name__])
         sys.modules[module.__name__] = module
         name = module.__name__
-        if '.' in name:
-            parent, _, attr = name.rpartition('.')
+        if "." in name:
+            parent, _, attr = name.rpartition(".")
             setattr(sys.modules[parent], attr, module)
     try:
         yield
@@ -283,9 +277,8 @@ def mask_modules(request):
 
     def myimp(name, *args, **kwargs):
         if name in modnames:
-            raise ImportError('No module named %s' % name)
-        else:
-            return realimport(name, *args, **kwargs)
+            raise ImportError("No module named %s" % name)
+        return realimport(name, *args, **kwargs)
 
     builtins.__import__ = myimp
     try:
