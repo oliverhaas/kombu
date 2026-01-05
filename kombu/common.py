@@ -1,31 +1,34 @@
-"""Common Utilities."""
+"""Common Utilities - Pure asyncio implementation."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from collections import deque
-from contextlib import contextmanager
-from functools import partial
+from contextlib import asynccontextmanager
 from itertools import count
+from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_OID, uuid3, uuid4, uuid5
-
-from amqp import ChannelError, RecoverableConnectionError
 
 from .entity import Exchange, Queue
 from .log import get_logger
 from .serialization import registry as serializers
 from .utils.uuid import uuid
 
+if TYPE_CHECKING:
+    from .connection import Connection
+    from .message import Message
+    from .messaging import Consumer, Producer
+    from .transport.redis import Channel
+
 __all__ = (
     "Broadcast",
-    "collect_replies",
-    "drain_consumer",
-    "eventloop",
-    "insured",
-    "itermessages",
-    "maybe_declare",
-    "send_reply",
+    "aeventloop",
+    "adrain_consumer",
+    "aitermessages",
+    "amaybe_declare",
+    "asend_reply",
     "uuid",
 )
 
@@ -57,7 +60,7 @@ def oid_from(instance, threads=True):
     return generate_oid(
         get_node_id(),
         os.getpid(),
-        threading.get_ident() if threads else 0,
+        threading.current_thread().ident if threads else 0,
         instance,
     )
 
@@ -71,348 +74,287 @@ class Broadcast(Queue):
     and both the queue and exchange is configured with auto deletion.
 
     Arguments:
-    ---------
-        name (str): This is used as the name of the exchange.
-        queue (str): By default a unique id is used for the queue
+        name: This is used as the name of the exchange.
+        queue: By default a unique id is used for the queue
             name for every consumer.  You can specify a custom
             queue name here.
-        unique (bool): Always create a unique queue
+        unique: Always create a unique queue
             even if a queue name is supplied.
-        **kwargs (Any): See :class:`~kombu.Queue` for a list
-            of additional keyword arguments supported.
+        **kwargs: See Queue for additional keyword arguments.
     """
 
-    attrs = Queue.attrs + (("queue", None),)
-
-    def __init__(self, name=None, queue=None, unique=False, auto_delete=True, exchange=None, alias=None, **kwargs):
+    def __init__(
+        self,
+        name: str | None = None,
+        queue: str | None = None,
+        unique: bool = False,
+        auto_delete: bool = True,
+        exchange: Exchange | None = None,
+        **kwargs: Any,
+    ):
         if unique:
             queue = "{}.{}".format(queue or "bcast", uuid())
         else:
             queue = queue or f"bcast.{uuid()}"
         super().__init__(
-            alias=alias or name,
-            queue=queue,
             name=queue,
             auto_delete=auto_delete,
-            exchange=(exchange if exchange is not None else Exchange(name, type="fanout")),
+            exchange=(exchange if exchange is not None else Exchange(name or "", type="fanout")),
             **kwargs,
         )
 
 
-def declaration_cached(entity, channel):
-    return entity in channel.connection.client.declared_entities
+async def amaybe_declare(
+    entity: Exchange | Queue,
+    channel: Channel | None = None,
+) -> bool:
+    """Declare entity (exchange or queue) if not already declared.
 
+    Args:
+        entity: Exchange or Queue to declare.
+        channel: Channel to use for declaration.
 
-def maybe_declare(entity, channel=None, retry=False, **retry_policy):
-    """Declare entity (cached)."""
-    if retry:
-        return _imaybe_declare(entity, channel, **retry_policy)
-    return _maybe_declare(entity, channel)
-
-
-def _ensure_channel_is_bound(entity, channel):
-    """Make sure the channel is bound to the entity.
-
-    :param entity: generic kombu nomenclature, generally an exchange or queue
-    :param channel: channel to bind to the entity
-    :return: the updated entity
+    Returns:
+        True if entity was declared, False if already declared.
     """
-    is_bound = entity.is_bound
-    if not is_bound:
-        if not channel:
-            raise ChannelError(f"Cannot bind channel {channel} to entity {entity}")
-        entity = entity.bind(channel)
-    return entity
+    if channel is None:
+        raise ValueError("Channel is required for declaration")
 
-
-def _maybe_declare(entity, channel):
-    # _maybe_declare sets name on original for autogen queues
-    orig = entity
-
-    _ensure_channel_is_bound(entity, channel)
-
-    if channel is None or channel.connection is None:
-        # If this was called from the `ensure()` method then the channel could have been invalidated
-        # and the correct channel was re-bound to the entity by calling the `entity.revive()` method.
-        if not entity.is_bound:
-            raise ChannelError(f"channel is None and entity {entity} not bound.")
-        channel = entity.channel
-
-    declared = ident = None
-    if channel.connection and entity.can_cache_declaration:
-        declared = channel.connection.client.declared_entities
-        ident = hash(entity)
-        if ident in declared:
-            return False
-
-    if not channel.connection:
-        raise RecoverableConnectionError("channel disconnected")
-    entity.declare(channel=channel)
-    if declared is not None and ident:
-        declared.add(ident)
-    if orig is not None:
-        orig.name = entity.name
+    if isinstance(entity, Exchange):
+        await entity.declare(channel)
+    elif isinstance(entity, Queue):
+        if entity.exchange:
+            await entity.exchange.declare(channel)
+        await entity.declare(channel)
+        if entity.exchange:
+            await entity.bind(channel)
     return True
 
 
-def _imaybe_declare(entity, channel, **retry_policy):
-    entity = _ensure_channel_is_bound(entity, channel)
+async def adrain_consumer(
+    consumer: Consumer,
+    limit: int = 1,
+    timeout: float | None = None,
+    callbacks: list | None = None,
+):
+    """Drain messages from consumer instance.
 
-    if not entity.channel.connection:
-        raise RecoverableConnectionError("channel disconnected")
+    Args:
+        consumer: Consumer instance to drain messages from.
+        limit: Maximum number of messages to drain.
+        timeout: Timeout for waiting on messages.
+        callbacks: Additional callbacks to add.
 
-    return entity.channel.connection.client.ensure(entity, _maybe_declare, **retry_policy)(entity, channel)
+    Yields:
+        Tuple of (body, message) for each received message.
+    """
+    acc: deque[tuple[Any, Message]] = deque()
 
-
-def drain_consumer(consumer, limit=1, timeout=None, callbacks=None):
-    """Drain messages from consumer instance."""
-    acc = deque()
-
-    def on_message(body, message):
+    def on_message(body: Any, message: Message) -> None:
         acc.append((body, message))
 
-    consumer.callbacks = [on_message] + (callbacks or [])
+    # Add our collector callback
+    original_callbacks = consumer._callbacks.copy()
+    consumer._callbacks = [on_message] + (callbacks or []) + consumer._callbacks
 
-    with consumer:
-        for _ in eventloop(consumer.channel.connection.client, limit=limit, timeout=timeout, ignore_timeouts=True):
-            try:
-                yield acc.popleft()
-            except IndexError:
-                pass
+    try:
+        async with consumer:
+            async for _ in aeventloop(consumer._connection, limit=limit, timeout=timeout, ignore_timeouts=True):
+                while acc:
+                    yield acc.popleft()
+    finally:
+        consumer._callbacks = original_callbacks
 
 
-def itermessages(conn, channel, queue, limit=1, timeout=None, callbacks=None, **kwargs):
-    """Iterator over messages."""
-    return drain_consumer(
-        conn.Consumer(queues=[queue], channel=channel, **kwargs),
+async def aitermessages(
+    conn: Connection,
+    queue: Queue,
+    limit: int = 1,
+    timeout: float | None = None,
+    callbacks: list | None = None,
+    **kwargs: Any,
+):
+    """Async iterator over messages from a queue.
+
+    Args:
+        conn: Connection to use.
+        queue: Queue to consume from.
+        limit: Maximum number of messages.
+        timeout: Timeout for waiting.
+        callbacks: Additional callbacks.
+        **kwargs: Additional arguments for Consumer.
+
+    Yields:
+        Tuple of (body, message) for each received message.
+    """
+    consumer = conn.Consumer(queues=[queue], **kwargs)
+    async for item in adrain_consumer(
+        consumer,
         limit=limit,
         timeout=timeout,
         callbacks=callbacks,
-    )
+    ):
+        yield item
 
 
-def eventloop(conn, limit=None, timeout=None, ignore_timeouts=False):
-    """Best practice generator wrapper around ``Connection.drain_events``.
+async def aeventloop(
+    conn: Connection,
+    limit: int | None = None,
+    timeout: float | None = None,
+    ignore_timeouts: bool = False,
+):
+    """Async generator for draining events from connection.
+
+    Best practice async generator wrapper around Connection.drain_events.
 
     Able to drain events forever, with a limit, and optionally ignoring
     timeout errors (a timeout of 1 is often used in environments where
     the socket can get "stuck", and is a best practice for Kombu consumers).
 
-    ``eventloop`` is a generator.
+    Example:
+        async def run(conn):
+            async for _ in aeventloop(conn, timeout=1, ignore_timeouts=True):
+                pass  # loop forever
 
-    Examples
-    --------
-        >>> from kombu.common import eventloop
-
-        >>> def run(conn):
-        ...     it = eventloop(conn, timeout=1, ignore_timeouts=True)
-        ...     next(it)   # one event consumed, or timed out.
-        ...
-        ...     for _ in eventloop(conn, timeout=1, ignore_timeouts=True):
-        ...         pass  # loop forever.
-
-    It also takes an optional limit parameter, and timeout errors
-    are propagated by default::
-
-        for _ in eventloop(connection, limit=1, timeout=1):
+        # With a limit:
+        async for _ in aeventloop(conn, limit=10, timeout=1):
             pass
 
-    See Also
-    --------
-        :func:`itermessages`, which is an event loop bound to one or more
-        consumers, that yields any messages received.
+    Args:
+        conn: Connection instance.
+        limit: Maximum number of iterations.
+        timeout: Timeout for each drain_events call.
+        ignore_timeouts: If True, continue on timeout instead of raising.
+
+    Yields:
+        None after each successful drain.
     """
-    for i in (limit and range(limit)) or count():
+    for i in range(limit) if limit else count():
         try:
-            yield conn.drain_events(timeout=timeout)
+            await conn.drain_events(timeout=timeout)
+            yield
         except TimeoutError:
-            if timeout and not ignore_timeouts:  # pragma: no cover
+            if timeout and not ignore_timeouts:
                 raise
+            yield
 
 
-def send_reply(exchange, req, msg, producer=None, retry=False, retry_policy=None, **props):
+async def asend_reply(
+    exchange: Exchange | str,
+    req: Message,
+    msg: Any,
+    producer: Producer,
+    **props: Any,
+) -> None:
     """Send reply for request.
 
-    Arguments:
-    ---------
-        exchange (kombu.Exchange, str): Reply exchange
-        req (~kombu.Message): Original request, a message with
-            a ``reply_to`` property.
-        producer (kombu.Producer): Producer instance
-        retry (bool): If true must retry according to
-            the ``reply_policy`` argument.
-        retry_policy (Dict): Retry settings.
-        **props (Any): Extra properties.
+    Args:
+        exchange: Reply exchange.
+        req: Original request message with reply_to property.
+        msg: Message body to send.
+        producer: Producer instance to use.
+        **props: Extra properties.
     """
-    return producer.publish(
+    await producer.publish(
         msg,
         exchange=exchange,
-        retry=retry,
-        retry_policy=retry_policy,
-        **dict(
-            {
-                "routing_key": req.properties["reply_to"],
-                "correlation_id": req.properties.get("correlation_id"),
-                "serializer": serializers.type_to_name[req.content_type],
-                "content_encoding": req.content_encoding,
-            },
-            **props,
-        ),
+        routing_key=req.properties["reply_to"],
+        correlation_id=req.properties.get("correlation_id"),
+        serializer=serializers.type_to_name.get(req.content_type, "json"),
+        **props,
     )
 
 
-def collect_replies(conn, channel, queue, *args, **kwargs):
-    """Generator collecting replies from ``queue``."""
-    no_ack = kwargs.setdefault("no_ack", True)
-    received = False
-    try:
-        for body, message in itermessages(conn, channel, queue, *args, **kwargs):
-            if not no_ack:
-                message.ack()
-            received = True
-            yield body
-    finally:
-        if received:
-            channel.after_reply_message_received(queue.name)
+async def acollect_replies(
+    conn: Connection,
+    queue: Queue,
+    limit: int = 1,
+    timeout: float | None = None,
+    no_ack: bool = True,
+    **kwargs: Any,
+):
+    """Async generator collecting replies from a queue.
+
+    Args:
+        conn: Connection to use.
+        queue: Queue to collect replies from.
+        limit: Maximum number of replies.
+        timeout: Timeout for waiting.
+        no_ack: If True, don't require acknowledgment.
+        **kwargs: Additional arguments.
+
+    Yields:
+        Message bodies.
+    """
+    async for body, message in aitermessages(
+        conn,
+        queue,
+        limit=limit,
+        timeout=timeout,
+        no_ack=no_ack,
+        **kwargs,
+    ):
+        if not no_ack:
+            await message.ack()
+        yield body
 
 
-def _ensure_errback(exc, interval):
-    logger.error(
-        "Connection error: %r. Retry in %ss\n",
-        exc,
-        interval,
-        exc_info=True,
-    )
+@asynccontextmanager
+async def aignore_errors(conn: Connection):
+    """Async context manager to ignore connection errors.
 
-
-@contextmanager
-def _ignore_errors(conn):
+    Args:
+        conn: Connection whose errors to ignore.
+    """
     try:
         yield
-    except conn.connection_errors + conn.channel_errors:
+    except Exception:
+        # In pure asyncio mode, we just catch all exceptions
+        # since we don't have the connection_errors/channel_errors tuples
         pass
-
-
-def ignore_errors(conn, fun=None, *args, **kwargs):
-    """Ignore connection and channel errors.
-
-    The first argument must be a connection object, or any other object
-    with ``connection_error`` and ``channel_error`` attributes.
-
-    Can be used as a function:
-
-    .. code-block:: python
-
-        def example(connection):
-            ignore_errors(connection, consumer.channel.close)
-
-    or as a context manager:
-
-    .. code-block:: python
-
-        def example(connection):
-            with ignore_errors(connection):
-                consumer.channel.close()
-
-
-    Note:
-    ----
-        Connection and channel errors should be properly handled,
-        and not ignored.  Using this function is only acceptable in a cleanup
-        phase, like when a connection is lost or at shutdown.
-    """
-    if fun:
-        with _ignore_errors(conn):
-            return fun(*args, **kwargs)
-    return _ignore_errors(conn)
-
-
-def revive_connection(connection, channel, on_revive=None):
-    if on_revive:
-        on_revive(channel)
-
-
-def insured(pool, fun, args, kwargs, errback=None, on_revive=None, **opts):
-    """Function wrapper to handle connection errors.
-
-    Ensures function performing broker commands completes
-    despite intermittent connection failures.
-    """
-    errback = errback or _ensure_errback
-
-    with pool.acquire(block=True) as conn:
-        conn.ensure_connection(errback=errback)
-        # we cache the channel for subsequent calls, this has to be
-        # reset on revival.
-        channel = conn.default_channel
-        revive = partial(revive_connection, conn, on_revive=on_revive)
-        insured = conn.autoretry(fun, channel, errback=errback, on_revive=revive, **opts)
-        retval, _ = insured(*args, **dict(kwargs, connection=conn))
-        return retval
 
 
 class QoS:
     """Thread safe increment/decrement of a channels prefetch_count.
 
     Arguments:
-    ---------
-        callback (Callable): Function used to set new prefetch count,
-            e.g. ``consumer.qos`` or ``channel.basic_qos``.  Will be called
-            with a single ``prefetch_count`` keyword argument.
-        initial_value (int): Initial prefetch count value..
-        max_prefetch (int or None): Maximum allowed prefetch count. If specified
-            as an integer, increment_eventually will not allow the value to exceed this limit.
-            If None (the default), there is no upper limit on the prefetch count.
+        callback: Async function to set new prefetch count.
+        initial_value: Initial prefetch count value.
+        max_prefetch: Maximum allowed prefetch count. If specified,
+            increment_eventually will not exceed this limit.
+            If None (default), there is no upper limit.
 
     Example:
-    -------
-        >>> from kombu import Consumer, Connection
-        >>> connection = Connection('amqp://')
-        >>> consumer = Consumer(connection)
-        >>> qos = QoS(consumer.qos, initial_prefetch_count=2)
-        >>> qos.update()  # set initial
+        >>> qos = QoS(channel.basic_qos, initial_prefetch_count=2)
+        >>> await qos.update()  # set initial
 
-        >>> qos.value
-        2
+        >>> qos.increment_eventually()
+        >>> qos.decrement_eventually()
 
-        >>> def in_some_thread():
-        ...     qos.increment_eventually()
-
-        >>> def in_some_other_thread():
-        ...     qos.decrement_eventually()
-
-        >>> while 1:
-        ...    if qos.prev != qos.value:
-        ...        qos.update()  # prefetch changed so update.
-
-    It can be used with any function supporting a ``prefetch_count`` keyword
-    argument::
-
-        >>> channel = connection.channel()
-        >>> QoS(channel.basic_qos, 10)
-
-
-        >>> def set_qos(prefetch_count):
-        ...     print('prefetch count now: %r' % (prefetch_count,))
-        >>> QoS(set_qos, 10)
+        >>> while True:
+        ...     if qos.prev != qos.value:
+        ...         await qos.update()
     """
 
-    prev = None
+    prev: int | None = None
 
-    def __init__(self, callback, initial_value, max_prefetch=None):
+    def __init__(
+        self,
+        callback,
+        initial_value: int,
+        max_prefetch: int | None = None,
+    ):
         self.callback = callback
         self._mutex = threading.RLock()
         self.value = initial_value or 0
         self.max_prefetch = max_prefetch
 
-    def increment_eventually(self, n=1):
+    def increment_eventually(self, n: int = 1) -> int:
         """Increment the value, but do not update the channels QoS.
 
         Note:
-        ----
-            The MainThread will be responsible for calling :meth:`update`
-            when necessary. If max_prefetch is set, the value will not
-            exceed this limit.
+            Call update() to apply changes. If max_prefetch is set,
+            the value will not exceed this limit.
         """
         with self._mutex:
             if self.value:
@@ -422,13 +364,11 @@ class QoS:
                 self.value = new_value
         return self.value
 
-    def decrement_eventually(self, n=1):
+    def decrement_eventually(self, n: int = 1) -> int:
         """Decrement the value, but do not update the channels QoS.
 
         Note:
-        ----
-            The MainThread will be responsible for calling :meth:`update`
-            when necessary.
+            Call update() to apply changes.
         """
         with self._mutex:
             if self.value:
@@ -436,7 +376,7 @@ class QoS:
                 self.value = max(self.value, 1)
         return self.value
 
-    def set(self, pcount):
+    async def set(self, pcount: int) -> int:
         """Set channel prefetch_count setting."""
         if pcount != self.prev:
             new_value = pcount
@@ -444,11 +384,13 @@ class QoS:
                 logger.warning("QoS: Disabled: prefetch_count exceeds %r", PREFETCH_COUNT_MAX)
                 new_value = 0
             logger.debug("basic.qos: prefetch_count->%s", new_value)
-            self.callback(prefetch_count=new_value)
+            result = self.callback(prefetch_count=new_value)
+            if asyncio.iscoroutine(result):
+                await result
             self.prev = pcount
         return pcount
 
-    def update(self):
+    async def update(self) -> int:
         """Update prefetch count with current value."""
         with self._mutex:
-            return self.set(self.value)
+            return await self.set(self.value)

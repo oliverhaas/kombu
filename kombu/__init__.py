@@ -44,10 +44,12 @@ del _temp
 del re
 
 # Public API exports
+from .common import Broadcast, aeventloop, amaybe_declare
 from .connection import Connection
 from .entity import Exchange, Queue, binding
 from .message import Message
 from .messaging import Consumer, Producer
+from .mixins import ConsumerMixin, ConsumerProducerMixin
 from .serialization import (
     disable_insecure_serializers,
     enable_insecure_serializers,
@@ -61,14 +63,21 @@ __all__ = (
     "Exchange",
     "Queue",
     "binding",
+    "Broadcast",
     # Message
     "Message",
     # Messaging
     "Producer",
     "Consumer",
+    # Mixins
+    "ConsumerMixin",
+    "ConsumerProducerMixin",
     # Simple API
     "SimpleQueue",
     "SimpleBuffer",
+    # Utilities
+    "aeventloop",
+    "amaybe_declare",
     # Serialization
     "enable_insecure_serializers",
     "disable_insecure_serializers",

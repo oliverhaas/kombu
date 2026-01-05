@@ -1,19 +1,23 @@
-"""Mixins."""
+"""Mixins - Pure asyncio implementation."""
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+import asyncio
+from contextlib import asynccontextmanager
 from functools import partial
 from itertools import count
-from time import sleep
+from typing import TYPE_CHECKING, Any
 
-from .common import ignore_errors
+from .common import aignore_errors
 from .log import get_logger
 from .messaging import Consumer, Producer
-from .utils.compat import nested
 from .utils.encoding import safe_repr
 from .utils.limits import TokenBucket
 from .utils.objects import cached_property
+
+if TYPE_CHECKING:
+    from .connection import Connection
+    from .transport.redis import Channel
 
 __all__ = ("ConsumerMixin", "ConsumerProducerMixin")
 
@@ -30,122 +34,121 @@ Broker connection error, trying again in %s seconds: %r.\
 
 
 class ConsumerMixin:
-    """Convenience mixin for implementing consumer programs.
+    """Convenience mixin for implementing async consumer programs.
 
-    It can be used outside of threads, with threads, or greenthreads
-    (eventlet/gevent) too.
+    Pure asyncio implementation.
 
     The basic class would need a :attr:`connection` attribute
     which must be a :class:`~kombu.Connection` instance,
     and define a :meth:`get_consumers` method that returns a list
     of :class:`kombu.Consumer` instances to use.
-    Supporting multiple consumers is important so that multiple
-    channels can be used for different QoS requirements.
 
     Example:
-    -------
-        .. code-block:: python
+        class Worker(ConsumerMixin):
+            task_queue = Queue('tasks', Exchange('tasks'), 'tasks')
 
-            class Worker(ConsumerMixin):
-                task_queue = Queue('tasks', Exchange('tasks'), 'tasks')
+            def __init__(self, connection):
+                self.connection = connection
 
-                def __init__(self, connection):
-                    self.connection = None
+            def get_consumers(self, Consumer, channel):
+                return [Consumer(queues=[self.task_queue],
+                                 callbacks=[self.on_task])]
 
-                def get_consumers(self, Consumer, channel):
-                    return [Consumer(queues=[self.task_queue],
-                                     callbacks=[self.on_task])]
+            async def on_task(self, body, message):
+                print(f'Got task: {body!r}')
+                await message.ack()
 
-                def on_task(self, body, message):
-                    print('Got task: {0!r}'.format(body))
-                    message.ack()
+        # Run the worker:
+        async with Connection('redis://localhost') as conn:
+            worker = Worker(conn)
+            await worker.run()
 
-    Methods
-    -------
-        * :meth:`extra_context`
+    Methods:
+        * extra_context(connection, channel)
 
-            Optional extra context manager that will be entered
+            Optional extra async context manager that will be entered
             after the connection and consumers have been set up.
+            Takes arguments (connection, channel).
 
-            Takes arguments ``(connection, channel)``.
+        * on_connection_error(exc, interval)
 
-        * :meth:`on_connection_error`
-
-            Handler called if the connection is lost/ or
-            is unavailable.
-
-            Takes arguments ``(exc, interval)``, where interval
-            is the time in seconds when the connection will be retried.
-
+            Handler called if the connection is lost or unavailable.
+            Takes arguments (exc, interval), where interval is the time
+            in seconds when the connection will be retried.
             The default handler will log the exception.
 
-        * :meth:`on_connection_revived`
+        * on_connection_revived()
 
             Handler called as soon as the connection is re-established
-            after connection failure.
+            after connection failure. Takes no arguments.
 
-            Takes no arguments.
+        * on_consume_ready(connection, channel, consumers)
 
-        * :meth:`on_consume_ready`
+            Handler called when the consumer is ready to accept messages.
+            Takes arguments (connection, channel, consumers).
 
-            Handler called when the consumer is ready to accept
-            messages.
-
-            Takes arguments ``(connection, channel, consumers)``.
-            Also keyword arguments to ``consume`` are forwarded
-            to this handler.
-
-        * :meth:`on_consume_end`
+        * on_consume_end(connection, channel)
 
             Handler called after the consumers are canceled.
-            Takes arguments ``(connection, channel)``.
+            Takes arguments (connection, channel).
 
-        * :meth:`on_iteration`
+        * on_iteration()
 
-            Handler called for every iteration while draining
-            events.
-
+            Handler called for every iteration while draining events.
             Takes no arguments.
 
-        * :meth:`on_decode_error`
+        * on_decode_error(message, exc)
 
             Handler called if a consumer was unable to decode
-            the body of a message.
-
-            Takes arguments ``(message, exc)`` where message is the
-            original message object.
-
-            The default handler will log the error and
-            acknowledge the message, so if you override make
-            sure to call super, or perform these steps yourself.
-
+            the body of a message. Takes arguments (message, exc).
     """
+
+    #: The connection to use
+    connection: Connection
 
     #: maximum number of retries trying to re-establish the connection,
     #: if the connection is lost/unavailable.
-    connect_max_retries = None
+    connect_max_retries: int | None = None
 
     #: When this is set to true the consumer should stop consuming
     #: and return, so that it can be joined if it is the implementation
-    #: of a thread.
-    should_stop = False
+    #: of a task.
+    should_stop: bool = False
 
-    def get_consumers(self, Consumer, channel):
+    def get_consumers(self, ConsumerFactory, channel: Channel) -> list[Consumer]:
+        """Return list of consumers.
+
+        Override this method to define the consumers.
+
+        Args:
+            ConsumerFactory: Partial Consumer class bound to channel.
+            channel: The channel to use.
+
+        Returns:
+            List of Consumer instances.
+        """
         raise NotImplementedError("Subclass responsibility")
 
-    def on_connection_revived(self):
-        pass
+    async def on_connection_revived(self) -> None:
+        """Called when connection is re-established after failure."""
 
-    def on_consume_ready(self, connection, channel, consumers, **kwargs):
-        pass
+    async def on_consume_ready(
+        self,
+        connection: Connection,
+        channel: Channel,
+        consumers: list[Consumer],
+        **kwargs: Any,
+    ) -> None:
+        """Called when consumer is ready to receive messages."""
 
-    def on_consume_end(self, connection, channel):
-        pass
+    async def on_consume_end(self, connection: Connection, channel: Channel) -> None:
+        """Called after consumers are canceled."""
 
-    def on_iteration(self):
-        pass
+    async def on_iteration(self) -> None:
+        """Called for every iteration while draining events."""
 
-    def on_decode_error(self, message, exc):
+    async def on_decode_error(self, message: Any, exc: Exception) -> None:
+        """Called when message body cannot be decoded."""
         error(
             "Can't decode message body: %r (type:%r encoding:%r raw:%r')",
             exc,
@@ -153,144 +156,219 @@ class ConsumerMixin:
             message.content_encoding,
             safe_repr(message.body),
         )
-        message.ack()
+        await message.ack()
 
-    def on_connection_error(self, exc, interval):
+    def on_connection_error(self, exc: Exception, interval: float) -> None:
+        """Called when connection error occurs."""
         warn(W_CONN_ERROR, interval, exc, exc_info=1)
 
-    @contextmanager
-    def extra_context(self, connection, channel):
+    @asynccontextmanager
+    async def extra_context(self, connection: Connection, channel: Channel):
+        """Optional extra async context manager.
+
+        Override to add custom context around consumption.
+        """
         yield
 
-    def run(self, _tokens=1, **kwargs):
+    async def run(self, _tokens: int = 1, **kwargs: Any) -> None:
+        """Run the consumer.
+
+        This will loop forever (or until should_stop is True),
+        consuming messages and handling connection errors.
+        """
         restart_limit = self.restart_limit
-        errors = self.connection.connection_errors + self.connection.channel_errors
+
         while not self.should_stop:
             try:
-                if restart_limit.can_consume(_tokens):  # pragma: no cover
-                    for _ in self.consume(limit=None, **kwargs):
+                if restart_limit.can_consume(_tokens):
+                    async for _ in self.consume(limit=None, **kwargs):
                         pass
                 else:
-                    sleep(restart_limit.expected_time(_tokens))
-            except errors:
+                    await asyncio.sleep(restart_limit.expected_time(_tokens))
+            except Exception:
                 warn(W_CONN_LOST, exc_info=1)
+                await asyncio.sleep(1.0)  # Brief pause before retry
 
-    @contextmanager
-    def consumer_context(self, **kwargs):
-        with self.Consumer() as (connection, channel, consumers), self.extra_context(connection, channel):
-            self.on_consume_ready(connection, channel, consumers, **kwargs)
+    @asynccontextmanager
+    async def consumer_context(self, **kwargs: Any):
+        """Async context manager for consumer setup.
+
+        Yields (connection, channel, consumers) tuple.
+        """
+        async with self.Consumer() as (connection, channel, consumers), self.extra_context(connection, channel):
+            await self.on_consume_ready(connection, channel, consumers, **kwargs)
             yield connection, channel, consumers
 
-    def consume(self, limit=None, timeout=None, safety_interval=1, **kwargs):
-        elapsed = 0
-        with self.consumer_context(**kwargs) as (conn, channel, consumers):
-            for i in (limit and range(limit)) or count():
+    async def consume(
+        self,
+        limit: int | None = None,
+        timeout: float | None = None,
+        safety_interval: float = 1.0,
+        **kwargs: Any,
+    ):
+        """Async generator for consuming messages.
+
+        Args:
+            limit: Maximum number of messages to consume.
+            timeout: Overall timeout in seconds.
+            safety_interval: Timeout for each drain_events call.
+            **kwargs: Additional arguments passed to consumer_context.
+
+        Yields:
+            None after each message is processed.
+        """
+        elapsed = 0.0
+
+        async with self.consumer_context(**kwargs) as (conn, channel, consumers):
+            for i in range(limit) if limit else count():
                 if self.should_stop:
                     break
-                self.on_iteration()
+
+                await self.on_iteration()
+
                 try:
-                    conn.drain_events(timeout=safety_interval)
+                    await conn.drain_events(timeout=safety_interval)
+                    yield
+                    elapsed = 0.0
                 except TimeoutError:
-                    conn.heartbeat_check()
                     elapsed += safety_interval
                     if timeout and elapsed >= timeout:
                         raise
                 except OSError:
                     if not self.should_stop:
                         raise
-                else:
-                    yield
-                    elapsed = 0
+
         debug("consume exiting")
 
-    def maybe_conn_error(self, fun):
-        """Use :func:`kombu.common.ignore_errors` instead."""
-        return ignore_errors(self, fun)
+    async def maybe_conn_error(self, fun) -> Any:
+        """Execute function ignoring connection errors."""
+        async with aignore_errors(self.connection):
+            result = fun()
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
 
-    def create_connection(self):
+    def create_connection(self) -> Connection:
+        """Create a new connection (clone of current)."""
         return self.connection.clone()
 
-    @contextmanager
-    def establish_connection(self):
-        with self.create_connection() as conn:
-            conn.ensure_connection(self.on_connection_error, self.connect_max_retries)
+    @asynccontextmanager
+    async def establish_connection(self):
+        """Async context manager to establish and yield connection."""
+        conn = self.create_connection()
+        try:
+            await conn.ensure_connection(
+                max_retries=self.connect_max_retries,
+                callback=self.on_connection_error,
+            )
             yield conn
+        finally:
+            await conn.close()
 
-    @contextmanager
-    def Consumer(self):
-        with self.establish_connection() as conn:
-            self.on_connection_revived()
-            info("Connected to %s", conn.as_uri())
-            channel = conn.default_channel
-            cls = partial(Consumer, channel, on_decode_error=self.on_decode_error)
-            with self._consume_from(*self.get_consumers(cls, channel)) as c:
-                yield conn, channel, c
-            debug("Consumers canceled")
-            self.on_consume_end(conn, channel)
+    @asynccontextmanager
+    async def Consumer(self):
+        """Async context manager for consumer setup.
+
+        Yields (connection, channel, consumers) tuple.
+        """
+        async with self.establish_connection() as conn:
+            await self.on_connection_revived()
+            info("Connected to %s", conn._url)
+
+            channel = await conn.default_channel()
+            ConsumerFactory = partial(
+                Consumer,
+                conn,
+                channel=channel,
+            )
+
+            consumers = self.get_consumers(ConsumerFactory, channel)
+
+            # Enter all consumers
+            for consumer in consumers:
+                await consumer.consume()
+
+            try:
+                yield conn, channel, consumers
+            finally:
+                # Cancel all consumers
+                for consumer in consumers:
+                    await consumer.cancel()
+
+                debug("Consumers canceled")
+                await self.on_consume_end(conn, channel)
+
         debug("Connection closed")
 
-    def _consume_from(self, *consumers):
-        return nested(*consumers)
-
     @cached_property
-    def restart_limit(self):
+    def restart_limit(self) -> TokenBucket:
+        """Rate limiter for connection restarts."""
         return TokenBucket(1)
-
-    @cached_property
-    def connection_errors(self):
-        return self.connection.connection_errors
-
-    @cached_property
-    def channel_errors(self):
-        return self.connection.channel_errors
 
 
 class ConsumerProducerMixin(ConsumerMixin):
     """Consumer and Producer mixin.
 
-    Version of ConsumerMixin having separate connection for also
-    publishing messages.
+    Version of ConsumerMixin with separate connection for publishing.
 
     Example:
-    -------
-        .. code-block:: python
+        class Worker(ConsumerProducerMixin):
 
-            class Worker(ConsumerProducerMixin):
+            def __init__(self, connection):
+                self.connection = connection
 
-                def __init__(self, connection):
-                    self.connection = connection
+            def get_consumers(self, Consumer, channel):
+                return [Consumer(queues=[Queue('foo')],
+                                 callbacks=[self.handle_message])]
 
-                def get_consumers(self, Consumer, channel):
-                    return [Consumer(queues=Queue('foo'),
-                                     on_message=self.handle_message,
-                                     accept='application/json',
-                                     prefetch_count=10)]
-
-                def handle_message(self, message):
-                    self.producer.publish(
-                        {'message': 'hello to you'},
-                        exchange='',
-                        routing_key=message.properties['reply_to'],
-                        correlation_id=message.properties['correlation_id'],
-                        retry=True,
-                    )
+            async def handle_message(self, body, message):
+                await self.producer.publish(
+                    {'message': 'hello to you'},
+                    exchange='',
+                    routing_key=message.properties['reply_to'],
+                )
+                await message.ack()
     """
 
-    _producer_connection = None
+    _producer_connection: Connection | None = None
+    _producer: Producer | None = None
 
-    def on_consume_end(self, connection, channel):
+    async def on_consume_end(self, connection: Connection, channel: Channel) -> None:
+        """Clean up producer connection on consume end."""
         if self._producer_connection is not None:
-            self._producer_connection.close()
+            await self._producer_connection.close()
             self._producer_connection = None
+            self._producer = None
 
     @property
-    def producer(self):
-        return Producer(self.producer_connection)
+    def producer(self) -> Producer:
+        """Get producer instance (creates connection if needed).
+
+        Note: You should call ensure_producer() before using this
+        in an async context.
+        """
+        if self._producer is None:
+            raise RuntimeError("Producer not initialized. Call ensure_producer() first.")
+        return self._producer
+
+    async def ensure_producer(self) -> Producer:
+        """Ensure producer is ready and return it.
+
+        Creates producer connection if not already connected.
+        """
+        if self._producer is None:
+            conn = await self.producer_connection
+            self._producer = Producer(conn)
+        return self._producer
 
     @property
-    def producer_connection(self):
+    async def producer_connection(self) -> Connection:
+        """Get or create producer connection."""
         if self._producer_connection is None:
             conn = self.connection.clone()
-            conn.ensure_connection(self.on_connection_error, self.connect_max_retries)
+            await conn.ensure_connection(
+                max_retries=self.connect_max_retries,
+                callback=self.on_connection_error,
+            )
             self._producer_connection = conn
         return self._producer_connection
