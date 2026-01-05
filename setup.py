@@ -97,7 +97,7 @@ setup(
     license='BSD-3-Clause',
     python_requires=">=3.10",
     install_requires=[
-        'redis>=5.0.0',
+        'redis>=4.2.0',
     ],
     tests_require=reqs('test.txt'),
     extras_require={

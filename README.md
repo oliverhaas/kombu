@@ -121,7 +121,7 @@ for existing Celery users through `asyncio.to_thread()` for sync tasks.
 ## Requirements
 
 - Python 3.10+
-- Redis 5.0+ (for `redis.asyncio`)
+- redis-py 4.2+ (provides `redis.asyncio`)
 
 ## License
 
