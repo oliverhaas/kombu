@@ -8,8 +8,7 @@ import sys
 from kombu.exceptions import reraise
 
 
-def symbol_by_name(name, aliases=None, imp=None, package=None,
-                   sep='.', default=None, **kwargs):
+def symbol_by_name(name, aliases=None, imp=None, package=None, sep=".", default=None, **kwargs):
     """Get symbol by qualified name.
 
     The name should be the full dot-separated path to the class::
@@ -47,10 +46,10 @@ def symbol_by_name(name, aliases=None, imp=None, package=None,
         imp = importlib.import_module
 
     if not isinstance(name, str):
-        return name                                 # already a class
+        return name  # already a class
 
     name = aliases.get(name) or name
-    sep = ':' if ':' in name else sep
+    sep = ":" if ":" in name else sep
     module_name, _, cls_name = name.rpartition(sep)
     if not module_name:
         cls_name, module_name = None, package if package else cls_name
@@ -58,9 +57,7 @@ def symbol_by_name(name, aliases=None, imp=None, package=None,
         try:
             module = imp(module_name, package=package, **kwargs)
         except ValueError as exc:
-            reraise(ValueError,
-                    ValueError(f"Couldn't import {name!r}: {exc}"),
-                    sys.exc_info()[2])
+            reraise(ValueError, ValueError(f"Couldn't import {name!r}: {exc}"), sys.exc_info()[2])
         return getattr(module, cls_name) if cls_name else module
     except (ImportError, AttributeError):
         if default is None:

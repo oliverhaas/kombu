@@ -7,22 +7,33 @@ from types import TracebackType
 from typing import TypeVar
 
 __all__ = (
-    'reraise', 'KombuError', 'OperationalError',
-    'NotBoundError', 'MessageStateError', 'TimeoutError',
-    'LimitExceeded', 'ConnectionLimitExceeded',
-    'ChannelLimitExceeded', 'ConnectionError', 'ChannelError',
-    'VersionMismatch', 'SerializerNotInstalled', 'ResourceError',
-    'SerializationError', 'EncodeError', 'DecodeError',
-    'InconsistencyError', 'ContentDisallowed', 'HttpError',
+    "ChannelError",
+    "ChannelLimitExceeded",
+    "ConnectionError",
+    "ConnectionLimitExceeded",
+    "ContentDisallowed",
+    "DecodeError",
+    "EncodeError",
+    "HttpError",
+    "InconsistencyError",
+    "KombuError",
+    "LimitExceeded",
+    "MessageStateError",
+    "NotBoundError",
+    "OperationalError",
+    "ResourceError",
+    "SerializationError",
+    "SerializerNotInstalled",
+    "TimeoutError",
+    "VersionMismatch",
+    "reraise",
 )
 
-BaseExceptionType = TypeVar('BaseExceptionType', bound=BaseException)
+BaseExceptionType = TypeVar("BaseExceptionType", bound=BaseException)
 
 
 def reraise(
-    tp: type[BaseExceptionType],
-    value: BaseExceptionType,
-    tb: TracebackType | None = None
+    tp: type[BaseExceptionType], value: BaseExceptionType, tb: TracebackType | None = None
 ) -> BaseExceptionType:
     """Reraise exception."""
     if value.__traceback__ is not tb:
@@ -104,11 +115,11 @@ class InconsistencyError(ConnectionError):
 class HttpError(Exception):
     """HTTP Client Error."""
 
-    def __init__(self, code: int, message: str = '', response: object = None):
+    def __init__(self, code: int, message: str = "", response: object = None):
         self.code = code
         self.message = message
         self.response = response
         super().__init__(code, message, response)
 
     def __str__(self) -> str:
-        return f'HTTP {self.code}: {self.message}'
+        return f"HTTP {self.code}: {self.message}"

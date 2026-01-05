@@ -29,10 +29,7 @@ class Resource:
         self._limit = limit
         self.preload = preload or 0
         self._closed = False
-        self.close_after_fork = (
-            close_after_fork
-            if close_after_fork is not None else self.close_after_fork
-        )
+        self.close_after_fork = close_after_fork if close_after_fork is not None else self.close_after_fork
 
         self._resource = LifoQueue()
         self._dirty = set()
@@ -41,7 +38,7 @@ class Resource:
         self.setup()
 
     def setup(self):
-        raise NotImplementedError('subclass responsibility')
+        raise NotImplementedError("subclass responsibility")
 
     def _add_when_empty(self):
         if self.limit and len(self._dirty) >= self.limit:
@@ -66,7 +63,7 @@ class Resource:
             LimitExceeded: if block is false and the limit has been exceeded.
         """
         if self._closed:
-            raise RuntimeError('Acquire on closed pool')
+            raise RuntimeError("Acquire on closed pool")
         if self.limit:
             while 1:
                 try:
@@ -99,6 +96,7 @@ class Resource:
                 be acquired if so needed.
             """
             self.release(R)
+
         R.release = release
 
         return R
@@ -171,9 +169,7 @@ class Resource:
         prev_limit = self._limit
         if (self._dirty and 0 < limit < self._limit) and not ignore_errors:
             if not force:
-                raise RuntimeError(
-                    "Can't shrink pool when in use: was={} now={}".format(
-                        self._limit, limit))
+                raise RuntimeError(f"Can't shrink pool when in use: was={self._limit} now={limit}")
             reset = True
         self._limit = limit
         if reset:
@@ -189,7 +185,7 @@ class Resource:
         resource = self._resource
         # we should remove the least recently used item, but there is no public API in LifoQueue to
         # do so.
-        with getattr(resource, 'mutex', nullcontext()):
+        with getattr(resource, "mutex", nullcontext()):
             # keep in mind the dirty resources are not shrinking
             while len(resource.queue) and (len(resource.queue) + len(self._dirty)) > self.limit:
                 R = resource.queue.pop()
@@ -204,7 +200,7 @@ class Resource:
     def limit(self, limit):
         self.resize(limit)
 
-    if os.environ.get('KOMBU_DEBUG_POOL'):  # pragma: no cover
+    if os.environ.get("KOMBU_DEBUG_POOL"):  # pragma: no cover
         _orig_acquire = acquire
         _orig_release = release
 
@@ -212,20 +208,21 @@ class Resource:
 
         def acquire(self, *args, **kwargs):
             import traceback
+
             id = self._next_resource_id = self._next_resource_id + 1
-            print(f'+{id} ACQUIRE {self.__class__.__name__}')
+            print(f"+{id} ACQUIRE {self.__class__.__name__}")
             r = self._orig_acquire(*args, **kwargs)
             r._resource_id = id
-            print(f'-{id} ACQUIRE {self.__class__.__name__}')
-            if not hasattr(r, 'acquired_by'):
+            print(f"-{id} ACQUIRE {self.__class__.__name__}")
+            if not hasattr(r, "acquired_by"):
                 r.acquired_by = []
             r.acquired_by.append(traceback.format_stack())
             return r
 
         def release(self, resource):
             id = resource._resource_id
-            print(f'+{id} RELEASE {self.__class__.__name__}')
+            print(f"+{id} RELEASE {self.__class__.__name__}")
             r = self._orig_release(resource)
-            print(f'-{id} RELEASE {self.__class__.__name__}')
+            print(f"-{id} RELEASE {self.__class__.__name__}")
             self._next_resource_id -= 1
             return r

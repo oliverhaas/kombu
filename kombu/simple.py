@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .message import Message
     from .transport.redis import Channel
 
-__all__ = ('SimpleQueue', 'SimpleBuffer')
+__all__ = ("SimpleBuffer", "SimpleQueue")
 
 
 class SimpleQueue:
@@ -43,7 +43,7 @@ class SimpleQueue:
     Empty = Empty
     no_ack: bool = False
     queue_opts: dict = {}
-    exchange_opts: dict = {'type': 'direct'}
+    exchange_opts: dict = {"type": "direct"}
 
     def __init__(
         self,
@@ -154,6 +154,7 @@ class SimpleQueue:
         await self._declare()
 
         from .messaging import Producer
+
         producer = Producer(
             self._connection,
             channel=self._channel,
@@ -283,7 +284,7 @@ class SimpleQueue:
         await self.close()
 
     def __repr__(self) -> str:
-        return f'<SimpleQueue: {self._queue.name}>'
+        return f"<SimpleQueue: {self._queue.name}>"
 
 
 class SimpleBuffer(SimpleQueue):
@@ -295,11 +296,11 @@ class SimpleBuffer(SimpleQueue):
 
     no_ack: bool = True
     queue_opts: dict = {
-        'durable': False,
-        'auto_delete': True,
+        "durable": False,
+        "auto_delete": True,
     }
     exchange_opts: dict = {
-        'type': 'direct',
-        'durable': False,
-        'auto_delete': True,
+        "type": "direct",
+        "durable": False,
+        "auto_delete": True,
     }

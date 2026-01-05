@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from .compression import decompress
 from .exceptions import MessageStateError, reraise
@@ -12,10 +13,10 @@ from .serialization import loads
 if TYPE_CHECKING:
     from .transport.redis import Channel
 
-__all__ = ('Message',)
+__all__ = ("Message",)
 
-ACK_STATES = {'ACK', 'REJECTED', 'REQUEUED'}
-IS_PYPY = hasattr(sys, 'pypy_version_info')
+ACK_STATES = {"ACK", "REJECTED", "REQUEUED"}
+IS_PYPY = hasattr(sys, "pypy_version_info")
 
 
 class Message:
@@ -40,10 +41,18 @@ class Message:
 
     if not IS_PYPY:  # pragma: no cover
         __slots__ = (
-            '_state', 'channel', 'delivery_tag',
-            'content_type', 'content_encoding',
-            'delivery_info', 'headers', 'properties',
-            'body', '_decoded_cache', 'accept', '__dict__',
+            "__dict__",
+            "_decoded_cache",
+            "_state",
+            "accept",
+            "body",
+            "channel",
+            "content_encoding",
+            "content_type",
+            "delivery_info",
+            "delivery_tag",
+            "headers",
+            "properties",
         )
 
     def __init__(
@@ -70,10 +79,10 @@ class Message:
         self.headers = headers or {}
         self.properties = properties or {}
         self._decoded_cache = None
-        self._state = 'RECEIVED'
+        self._state = "RECEIVED"
         self.accept = accept
 
-        compression = self.headers.get('compression')
+        compression = self.headers.get("compression")
         if not self.errors and compression:
             try:
                 body = decompress(body, compression)
@@ -105,21 +114,19 @@ class Message:
                 acknowledged/requeued/rejected.
         """
         if self.channel is None:
-            raise self.MessageStateError(
-                'This message does not have a receiving channel')
+            raise self.MessageStateError("This message does not have a receiving channel")
         if self.channel.no_ack_consumers is not None:
             try:
-                consumer_tag = self.delivery_info['consumer_tag']
+                consumer_tag = self.delivery_info["consumer_tag"]
             except KeyError:
                 pass
             else:
                 if consumer_tag in self.channel.no_ack_consumers:
                     return
         if self.acknowledged:
-            raise self.MessageStateError(
-                f'Message already acknowledged with state: {self._state}')
+            raise self.MessageStateError(f"Message already acknowledged with state: {self._state}")
         await self.channel.basic_ack(self.delivery_tag, multiple=multiple)
-        self._state = 'ACK'
+        self._state = "ACK"
 
     async def ack_log_error(
         self,
@@ -132,13 +139,17 @@ class Message:
         except BrokenPipeError as exc:
             logger.critical(
                 "Couldn't ack %r, reason:%r",
-                self.delivery_tag, exc, exc_info=True,
+                self.delivery_tag,
+                exc,
+                exc_info=True,
             )
             raise
         except errors as exc:
             logger.critical(
                 "Couldn't ack %r, reason:%r",
-                self.delivery_tag, exc, exc_info=True,
+                self.delivery_tag,
+                exc,
+                exc_info=True,
             )
 
     async def reject_log_error(
@@ -152,7 +163,9 @@ class Message:
         except errors as exc:
             logger.critical(
                 "Couldn't reject %r, reason: %r",
-                self.delivery_tag, exc, exc_info=True,
+                self.delivery_tag,
+                exc,
+                exc_info=True,
             )
 
     async def reject(self, requeue: bool = False) -> None:
@@ -165,13 +178,11 @@ class Message:
                 acknowledged/requeued/rejected.
         """
         if self.channel is None:
-            raise self.MessageStateError(
-                'This message does not have a receiving channel')
+            raise self.MessageStateError("This message does not have a receiving channel")
         if self.acknowledged:
-            raise self.MessageStateError(
-                f'Message already acknowledged with state: {self._state}')
+            raise self.MessageStateError(f"Message already acknowledged with state: {self._state}")
         await self.channel.basic_reject(self.delivery_tag, requeue=requeue)
-        self._state = 'REJECTED'
+        self._state = "REJECTED"
 
     async def requeue(self) -> None:
         """Reject this message and put it back on the queue.
@@ -185,13 +196,11 @@ class Message:
                 acknowledged/requeued/rejected.
         """
         if self.channel is None:
-            raise self.MessageStateError(
-                'This message does not have a receiving channel')
+            raise self.MessageStateError("This message does not have a receiving channel")
         if self.acknowledged:
-            raise self.MessageStateError(
-                f'Message already acknowledged with state: {self._state}')
+            raise self.MessageStateError(f"Message already acknowledged with state: {self._state}")
         await self.channel.basic_reject(self.delivery_tag, requeue=True)
-        self._state = 'REQUEUED'
+        self._state = "REQUEUED"
 
     def decode(self) -> Any:
         """Deserialize the message body.
@@ -227,7 +236,7 @@ class Message:
     def __repr__(self) -> str:
         body_len = len(self.body) if self.body is not None else None
         return (
-            f'<{type(self).__name__} object at {id(self):#x} '
-            f'state={self._state!r} content_type={self.content_type!r} '
-            f'delivery_tag={self.delivery_tag!r} body_length={body_len}>'
+            f"<{type(self).__name__} object at {id(self):#x} "
+            f"state={self._state!r} content_type={self.content_type!r} "
+            f"delivery_tag={self.delivery_tag!r} body_length={body_len}>"
         )

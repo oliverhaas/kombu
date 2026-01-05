@@ -5,9 +5,10 @@ from __future__ import annotations
 import base64
 import json
 import uuid
+from collections.abc import Callable
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 textual_types = ()
 
@@ -32,9 +33,7 @@ class JSONEncoder(json.JSONEncoder):
 
         for t, (marker, encoder) in _encoders.items():
             if isinstance(o, t):
-                return (
-                    encoder(o) if marker is None else _as(marker, encoder(o))
-                )
+                return encoder(o) if marker is None else _as(marker, encoder(o))
 
         # Bytes is slightly trickier, so we cannot put them directly
         # into _encoders, because we use two formats: bytes, and base64.
@@ -51,13 +50,7 @@ def _as(t: str, v: Any):
     return {"__type__": t, "__value__": v}
 
 
-def dumps(
-    s,
-    _dumps=json.dumps,
-    cls=JSONEncoder,
-    default_kwargs=None,
-    **kwargs
-):
+def dumps(s, _dumps=json.dumps, cls=JSONEncoder, default_kwargs=None, **kwargs):
     """Serialize object to json string."""
     default_kwargs = default_kwargs or {}
     return _dumps(s, cls=cls, **dict(default_kwargs, **kwargs))
@@ -69,10 +62,8 @@ def object_hook(o: dict):
         decoder = _decoders.get(o["__type__"])
         if decoder:
             return decoder(o["__value__"])
-        else:
-            raise ValueError("Unsupported type", type, o)
-    else:
-        return o
+        raise ValueError("Unsupported type", type, o)
+    return o
 
 
 def loads(s, _loads=json.loads, decode_bytes=True, object_hook=object_hook):
@@ -85,9 +76,7 @@ def loads(s, _loads=json.loads, decode_bytes=True, object_hook=object_hook):
     # </rant>
     if isinstance(s, memoryview):
         s = s.tobytes().decode("utf-8")
-    elif isinstance(s, bytearray):
-        s = s.decode("utf-8")
-    elif decode_bytes and isinstance(s, bytes):
+    elif isinstance(s, bytearray) or (decode_bytes and isinstance(s, bytes)):
         s = s.decode("utf-8")
 
     return _loads(s, object_hook=object_hook)
@@ -125,8 +114,7 @@ _decoders: dict[str, DecoderT] = {
 def _register_default_types():
     # NOTE: datetime should be registered before date,
     # because datetime is also instance of date.
-    register_type(datetime, "datetime", datetime.isoformat,
-                  datetime.fromisoformat)
+    register_type(datetime, "datetime", datetime.isoformat, datetime.fromisoformat)
     register_type(
         date,
         "date",

@@ -70,23 +70,20 @@ except ImportError:  # pragma: no cover
     QueueServiceClient = None
 
 try:
-    from azure.identity import (DefaultAzureCredential,
-                                ManagedIdentityCredential)
+    from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 except ImportError:
     DefaultAzureCredential = None
     ManagedIdentityCredential = None
 
 # Azure storage queues allow only alphanumeric and dashes
 # so, replace everything with a dash
-CHARS_REPLACE_TABLE = {
-    ord(c): 0x2d for c in string.punctuation
-}
+CHARS_REPLACE_TABLE = {ord(c): 0x2D for c in string.punctuation}
 
 
 class Channel(virtual.Channel):
     """Azure Storage Queues channel."""
 
-    domain_format: str = 'kombu%(vhost)s'
+    domain_format: str = "kombu%(vhost)s"
     _queue_service: QueueServiceClient | None = None
     _queue_name_cache: dict[Any, Any] = {}
     no_ack: bool = True
@@ -94,24 +91,20 @@ class Channel(virtual.Channel):
 
     def __init__(self, *args, **kwargs):
         if QueueServiceClient is None:
-            raise ImportError('Azure Storage Queues transport requires the '
-                              'azure-storage-queue library')
+            raise ImportError("Azure Storage Queues transport requires the azure-storage-queue library")
 
         super().__init__(*args, **kwargs)
 
-        self._credential, self._url = Transport.parse_uri(
-            self.conninfo.hostname
-        )
+        self._credential, self._url = Transport.parse_uri(self.conninfo.hostname)
 
         for queue in self.queue_service.list_queues():
-            self._queue_name_cache[queue['name']] = queue
+            self._queue_name_cache[queue["name"]] = queue
 
     def basic_consume(self, queue, no_ack, *args, **kwargs):
         if no_ack:
             self._noack_queues.add(queue)
 
-        return super().basic_consume(queue, no_ack,
-                                     *args, **kwargs)
+        return super().basic_consume(queue, no_ack, *args, **kwargs)
 
     def entity_name(self, name, table=CHARS_REPLACE_TABLE) -> str:
         """Format AMQP queue name into a valid Azure Storage Queue name."""
@@ -121,9 +114,7 @@ class Channel(virtual.Channel):
         """Ensure a queue exists."""
         queue = self.entity_name(self.queue_name_prefix + queue)
         try:
-            q = self._queue_service.get_queue_client(
-                queue=self._queue_name_cache[queue]
-            )
+            q = self._queue_service.get_queue_client(queue=self._queue_name_cache[queue])
         except KeyError:
             try:
                 q = self.queue_service.create_queue(queue)
@@ -176,9 +167,7 @@ class Channel(virtual.Channel):
     @property
     def queue_service(self) -> QueueServiceClient:
         if self._queue_service is None:
-            self._queue_service = QueueServiceClient(
-                account_url=self._url, credential=self._credential
-            )
+            self._queue_service = QueueServiceClient(account_url=self._url, credential=self._credential)
 
         return self._queue_service
 
@@ -192,7 +181,7 @@ class Channel(virtual.Channel):
 
     @cached_property
     def queue_name_prefix(self) -> str:
-        return self.transport_options.get('queue_name_prefix', '')
+        return self.transport_options.get("queue_name_prefix", "")
 
 
 class Transport(virtual.Transport):
@@ -217,21 +206,25 @@ class Transport(virtual.Transport):
 
         try:
             # > 'some/key@url'
-            uri = uri.replace('azurestoragequeues://', '')
+            uri = uri.replace("azurestoragequeues://", "")
             # > 'some/key',  'url'
-            credential, url = uri.rsplit('@', 1)
+            credential, url = uri.rsplit("@", 1)
 
             if "DefaultAzureCredential".lower() == credential.lower():
                 if DefaultAzureCredential is None:
-                    raise ImportError('Azure Storage Queues transport with a '
-                                      'DefaultAzureCredential requires the '
-                                      'azure-identity library')
+                    raise ImportError(
+                        "Azure Storage Queues transport with a "
+                        "DefaultAzureCredential requires the "
+                        "azure-identity library"
+                    )
                 credential = DefaultAzureCredential()
             elif "ManagedIdentityCredential".lower() == credential.lower():
                 if ManagedIdentityCredential is None:
-                    raise ImportError('Azure Storage Queues transport with a '
-                                      'ManagedIdentityCredential requires the '
-                                      'azure-identity library')
+                    raise ImportError(
+                        "Azure Storage Queues transport with a "
+                        "ManagedIdentityCredential requires the "
+                        "azure-identity library"
+                    )
                 credential = ManagedIdentityCredential()
             elif "devstoreaccount1" in url and ".core.windows.net" not in url:
                 # parse credential as a dict if Azurite is being used
@@ -244,20 +237,16 @@ class Transport(virtual.Transport):
             assert all([credential, url])
         except Exception:
             raise ValueError(
-                'Need a URI like '
-                'azurestoragequeues://{SAS or access key}@{URL}, '
-                'azurestoragequeues://DefaultAzureCredential@{URL}, '
-                ', or '
-                'azurestoragequeues://ManagedIdentityCredential@{URL}'
+                "Need a URI like "
+                "azurestoragequeues://{SAS or access key}@{URL}, "
+                "azurestoragequeues://DefaultAzureCredential@{URL}, "
+                ", or "
+                "azurestoragequeues://ManagedIdentityCredential@{URL}"
             )
 
         return credential, url
 
     @classmethod
-    def as_uri(
-        cls, uri: str, include_password: bool = False, mask: str = "**"
-    ) -> str:
+    def as_uri(cls, uri: str, include_password: bool = False, mask: str = "**") -> str:
         credential, url = cls.parse_uri(uri)
-        return "azurestoragequeues://{}@{}".format(
-            credential if include_password else mask, url
-        )
+        return f"azurestoragequeues://{credential if include_password else mask}@{url}"

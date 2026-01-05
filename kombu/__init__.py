@@ -20,52 +20,59 @@ import re
 from collections import namedtuple
 from typing import cast
 
-__version__ = '6.0.0a1'
-__author__ = 'Ask Solem'
-__contact__ = 'auvipy@gmail.com'
-__homepage__ = 'https://kombu.readthedocs.io'
-__docformat__ = 'restructuredtext en'
+__version__ = "6.0.0a1"
+__author__ = "Ask Solem"
+__contact__ = "auvipy@gmail.com"
+__homepage__ = "https://kombu.readthedocs.io"
+__docformat__ = "restructuredtext en"
 
 # Version info
-version_info_t = namedtuple('version_info_t', (
-    'major', 'minor', 'micro', 'releaselevel', 'serial',
-))
+version_info_t = namedtuple(
+    "version_info_t",
+    (
+        "major",
+        "minor",
+        "micro",
+        "releaselevel",
+        "serial",
+    ),
+)
 
-_temp = cast(re.Match, re.match(
-    r'(\d+)\.(\d+).(\d+)(.+)?', __version__)).groups()
-VERSION = version_info = version_info_t(
-    int(_temp[0]), int(_temp[1]), int(_temp[2]), _temp[3] or '', '')
+_temp = cast("re.Match", re.match(r"(\d+)\.(\d+).(\d+)(.+)?", __version__)).groups()
+VERSION = version_info = version_info_t(int(_temp[0]), int(_temp[1]), int(_temp[2]), _temp[3] or "", "")
 del _temp
 del re
 
 # Public API exports
-from .connection import Connection  # noqa: E402
-from .entity import Exchange, Queue, binding  # noqa: E402
-from .message import Message  # noqa: E402
-from .messaging import Consumer, Producer  # noqa: E402
-from .serialization import disable_insecure_serializers  # noqa: E402
-from .serialization import enable_insecure_serializers  # noqa: E402
-from .simple import SimpleBuffer, SimpleQueue  # noqa: E402
+from .connection import Connection
+from .entity import Exchange, Queue, binding
+from .message import Message
+from .messaging import Consumer, Producer
+from .serialization import (
+    disable_insecure_serializers,
+    enable_insecure_serializers,
+)
+from .simple import SimpleBuffer, SimpleQueue
 
 __all__ = (
     # Connection
-    'Connection',
+    "Connection",
     # Entities
-    'Exchange',
-    'Queue',
-    'binding',
+    "Exchange",
+    "Queue",
+    "binding",
     # Message
-    'Message',
+    "Message",
     # Messaging
-    'Producer',
-    'Consumer',
+    "Producer",
+    "Consumer",
     # Simple API
-    'SimpleQueue',
-    'SimpleBuffer',
+    "SimpleQueue",
+    "SimpleBuffer",
     # Serialization
-    'enable_insecure_serializers',
-    'disable_insecure_serializers',
+    "enable_insecure_serializers",
+    "disable_insecure_serializers",
     # Version
-    'VERSION',
-    'version_info',
+    "VERSION",
+    "version_info",
 )

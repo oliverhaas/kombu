@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from .entity import Exchange, Queue
 from .serialization import dumps
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
     from .message import Message
     from .transport.redis import Channel
 
-__all__ = ('Producer', 'Consumer')
+__all__ = ("Consumer", "Producer")
 
 
 class Producer:
@@ -35,7 +36,7 @@ class Producer:
     """
 
     exchange: Exchange | None = None
-    routing_key: str = ''
+    routing_key: str = ""
     serializer: str | None = None
     compression: str | None = None
     auto_declare: bool = True
@@ -56,11 +57,11 @@ class Producer:
         self._declared = False
 
         if isinstance(exchange, str):
-            self.exchange = Exchange(exchange) if exchange else Exchange('')
+            self.exchange = Exchange(exchange) if exchange else Exchange("")
         elif exchange is not None:
             self.exchange = exchange
         else:
-            self.exchange = Exchange('')
+            self.exchange = Exchange("")
 
         self.routing_key = routing_key if routing_key is not None else self.routing_key
         self.serializer = serializer if serializer is not None else self.serializer
@@ -119,7 +120,7 @@ class Producer:
 
         # Resolve defaults
         routing_key = routing_key if routing_key is not None else self.routing_key
-        serializer = serializer if serializer is not None else (self.serializer or 'json')
+        serializer = serializer if serializer is not None else (self.serializer or "json")
 
         if isinstance(exchange, str):
             exchange_name = exchange
@@ -128,7 +129,7 @@ class Producer:
         elif self.exchange:
             exchange_name = self.exchange.name
         else:
-            exchange_name = ''
+            exchange_name = ""
 
         # Serialize the body
         content_type, content_encoding, serialized_body = dumps(body, serializer)
@@ -138,22 +139,22 @@ class Producer:
             **kwargs,
         }
         if priority is not None:
-            properties['priority'] = priority
+            properties["priority"] = priority
         if expiration is not None:
-            properties['expiration'] = str(int(expiration * 1000))
+            properties["expiration"] = str(int(expiration * 1000))
         if delivery_mode is not None:
-            properties['delivery_mode'] = delivery_mode
+            properties["delivery_mode"] = delivery_mode
 
         message = {
-            'body': serialized_body.decode('utf-8') if isinstance(serialized_body, bytes) else serialized_body,
-            'content-type': content_type,
-            'content-encoding': content_encoding,
-            'properties': properties,
-            'headers': headers or {},
+            "body": serialized_body.decode("utf-8") if isinstance(serialized_body, bytes) else serialized_body,
+            "content-type": content_type,
+            "content-encoding": content_encoding,
+            "properties": properties,
+            "headers": headers or {},
         }
 
         # Encode and publish
-        message_bytes = json_dumps(message).encode('utf-8')
+        message_bytes = json_dumps(message).encode("utf-8")
         await channel.publish(
             message=message_bytes,
             exchange=exchange_name,
@@ -181,7 +182,7 @@ class Producer:
         await self.close()
 
     def __repr__(self) -> str:
-        return f'<Producer: {self._connection}>'
+        return f"<Producer: {self._connection}>"
 
 
 class Consumer:
@@ -328,8 +329,6 @@ class Consumer:
             # Timeout or other error, continue iteration
             pass
 
-        return None
-
     async def iterate(
         self,
         limit: int | None = None,
@@ -378,4 +377,4 @@ class Consumer:
         await self.close()
 
     def __repr__(self) -> str:
-        return f'<Consumer: {len(self._queues)} queues on {self._connection}>'
+        return f"<Consumer: {len(self._queues)} queues on {self._connection}>"

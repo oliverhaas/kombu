@@ -8,8 +8,8 @@ from __future__ import annotations
 from .redis import Transport
 
 TRANSPORT_ALIASES = {
-    'redis': 'kombu.transport.redis:Transport',
-    'rediss': 'kombu.transport.redis:Transport',
+    "redis": "kombu.transport.redis:Transport",
+    "rediss": "kombu.transport.redis:Transport",
 }
 
-__all__ = ('Transport', 'TRANSPORT_ALIASES')
+__all__ = ("TRANSPORT_ALIASES", "Transport")

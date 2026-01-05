@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .transport.redis import Channel
 
-__all__ = ('Exchange', 'Queue', 'binding')
+__all__ = ("Exchange", "Queue", "binding")
 
 TRANSIENT_DELIVERY_MODE = 1
 PERSISTENT_DELIVERY_MODE = 2
 DELIVERY_MODES = {
-    'transient': TRANSIENT_DELIVERY_MODE,
-    'persistent': PERSISTENT_DELIVERY_MODE,
+    "transient": TRANSIENT_DELIVERY_MODE,
+    "persistent": PERSISTENT_DELIVERY_MODE,
 }
 
 
@@ -53,8 +53,8 @@ class Exchange:
 
     def __init__(
         self,
-        name: str = '',
-        type: str = 'direct',
+        name: str = "",
+        type: str = "direct",
         durable: bool = True,
         auto_delete: bool = False,
         delivery_mode: int | str | None = None,
@@ -72,7 +72,7 @@ class Exchange:
         self._channel = channel
 
     def __hash__(self) -> int:
-        return hash(f'E|{self.name}')
+        return hash(f"E|{self.name}")
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Exchange):
@@ -131,9 +131,9 @@ class Queue:
 
     def __init__(
         self,
-        name: str = '',
+        name: str = "",
         exchange: Exchange | str | None = None,
-        routing_key: str = '',
+        routing_key: str = "",
         durable: bool = True,
         exclusive: bool = False,
         auto_delete: bool = False,
@@ -172,18 +172,18 @@ class Queue:
 
         # Build queue_arguments from convenience properties
         if expires is not None:
-            self.queue_arguments['x-expires'] = int(expires * 1000)
+            self.queue_arguments["x-expires"] = int(expires * 1000)
         if message_ttl is not None:
-            self.queue_arguments['x-message-ttl'] = int(message_ttl * 1000)
+            self.queue_arguments["x-message-ttl"] = int(message_ttl * 1000)
         if max_length is not None:
-            self.queue_arguments['x-max-length'] = max_length
+            self.queue_arguments["x-max-length"] = max_length
         if max_length_bytes is not None:
-            self.queue_arguments['x-max-length-bytes'] = max_length_bytes
+            self.queue_arguments["x-max-length-bytes"] = max_length_bytes
         if max_priority is not None:
-            self.queue_arguments['x-max-priority'] = max_priority
+            self.queue_arguments["x-max-priority"] = max_priority
 
     def __hash__(self) -> int:
-        return hash(f'Q|{self.name}')
+        return hash(f"Q|{self.name}")
 
     def __eq__(self, other: object) -> bool:
         if isinstance(other, Queue):
@@ -284,7 +284,7 @@ class binding:
     def __init__(
         self,
         exchange: Exchange | None = None,
-        routing_key: str = '',
+        routing_key: str = "",
         arguments: dict | None = None,
         unbind_arguments: dict | None = None,
     ):
@@ -323,8 +323,8 @@ class binding:
                 )
 
     def __repr__(self) -> str:
-        return f'<binding: {self}>'
+        return f"<binding: {self}>"
 
     def __str__(self) -> str:
-        ex_name = self.exchange.name if self.exchange else ''
-        return f'{ex_name!r}->{self.routing_key!r}'
+        ex_name = self.exchange.name if self.exchange else ""
+        return f"{ex_name!r}->{self.routing_key!r}"

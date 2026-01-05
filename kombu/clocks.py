@@ -7,9 +7,9 @@ from operator import itemgetter
 from threading import Lock
 from typing import Any
 
-__all__ = ('LamportClock', 'timetuple')
+__all__ = ("LamportClock", "timetuple")
 
-R_CLOCK = '_lamport(clock={0}, timestamp={1}, id={2} {3!r})'
+R_CLOCK = "_lamport(clock={0}, timestamp={1}, id={2} {3!r})"
 
 
 class timetuple(tuple):
@@ -27,9 +27,7 @@ class timetuple(tuple):
 
     __slots__ = ()
 
-    def __new__(
-        cls, clock: int | None, timestamp: float, id: str, obj: Any = None
-    ) -> timetuple:
+    def __new__(cls, clock: int | None, timestamp: float, id: str, obj: Any = None) -> timetuple:
         return tuple.__new__(cls, (clock, timestamp, id, obj))
 
     def __repr__(self) -> str:
@@ -106,9 +104,7 @@ class LamportClock:
     #: The clocks current value.
     value = 0
 
-    def __init__(
-        self, initial_value: int = 0, Lock: type[Lock] = Lock
-    ) -> None:
+    def __init__(self, initial_value: int = 0, Lock: type[Lock] = Lock) -> None:
         self.value = initial_value
         self.mutex = Lock()
 
@@ -153,4 +149,4 @@ class LamportClock:
         return str(self.value)
 
     def __repr__(self) -> str:
-        return f'<LamportClock: {self.value}>'
+        return f"<LamportClock: {self.value}>"

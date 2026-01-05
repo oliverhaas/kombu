@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import copy
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+from typing_extensions import Self
 
 from .connection import maybe_channel
 from .exceptions import NotBoundError
@@ -14,18 +17,14 @@ if TYPE_CHECKING:
     from kombu.transport.virtual import Channel
 
 
-__all__ = ('Object', 'MaybeChannelBound')
+__all__ = ("MaybeChannelBound", "Object")
 
 _T = TypeVar("_T")
 _ObjectType = TypeVar("_ObjectType", bound="Object")
-_MaybeChannelBoundType = TypeVar(
-    "_MaybeChannelBoundType", bound="MaybeChannelBound"
-)
+_MaybeChannelBoundType = TypeVar("_MaybeChannelBoundType", bound="MaybeChannelBound")
 
 
-def unpickle_dict(
-    cls: type[_ObjectType], kwargs: dict[str, Any]
-) -> _ObjectType:
+def unpickle_dict(cls: type[_ObjectType], kwargs: dict[str, Any]) -> _ObjectType:
     return cls(**kwargs)
 
 
@@ -57,17 +56,13 @@ class Object:
             if recurse and isinstance(obj, Object):
                 return obj.as_dict(recurse=True)
             return type(obj) if type and obj is not None else obj
-        return {
-            attr: f(getattr(self, attr), type) for attr, type in self.attrs
-        }
 
-    def __reduce__(self: _ObjectType) -> tuple[
-        Callable[[type[_ObjectType], dict[str, Any]], _ObjectType],
-        tuple[type[_ObjectType], dict[str, Any]]
-    ]:
+        return {attr: f(getattr(self, attr), type) for attr, type in self.attrs}
+
+    def __reduce__(self) -> tuple[Callable[[type[Self], dict[str, Any]], Self], tuple[type[Self], dict[str, Any]]]:
         return unpickle_dict, (self.__class__, self.as_dict())
 
-    def __copy__(self: _ObjectType) -> _ObjectType:
+    def __copy__(self) -> Self:
         return self.__class__(**self.as_dict())
 
 
@@ -80,21 +75,15 @@ class MaybeChannelBound(Object):
     #: Defines whether maybe_declare can skip declaring this entity twice.
     can_cache_declaration = False
 
-    def __call__(
-        self: _MaybeChannelBoundType, channel: (Channel | Connection)
-    ) -> _MaybeChannelBoundType:
+    def __call__(self, channel: (Channel | Connection)) -> Self:
         """`self(channel) -> self.bind(channel)`."""
         return self.bind(channel)
 
-    def bind(
-        self: _MaybeChannelBoundType, channel: (Channel | Connection)
-    ) -> _MaybeChannelBoundType:
+    def bind(self, channel: (Channel | Connection)) -> Self:
         """Create copy of the instance that is bound to a channel."""
         return copy(self).maybe_bind(channel)
 
-    def maybe_bind(
-        self: _MaybeChannelBoundType, channel: (Channel | Connection)
-    ) -> _MaybeChannelBoundType:
+    def maybe_bind(self, channel: (Channel | Connection)) -> Self:
         """Bind instance to channel if not already bound."""
         if not self.is_bound and channel:
             self._channel = maybe_channel(channel)
@@ -118,12 +107,11 @@ class MaybeChannelBound(Object):
     def __repr__(self) -> str:
         return self._repr_entity(type(self).__name__)
 
-    def _repr_entity(self, item: str = '') -> str:
+    def _repr_entity(self, item: str = "") -> str:
         item = item or type(self).__name__
         if self.is_bound:
-            return '<{} bound to chan:{}>'.format(
-                item or type(self).__name__, self.channel.channel_id)
-        return f'<unbound {item}>'
+            return f"<{item or type(self).__name__} bound to chan:{self.channel.channel_id}>"
+        return f"<unbound {item}>"
 
     @property
     def is_bound(self) -> bool:
@@ -135,9 +123,7 @@ class MaybeChannelBound(Object):
         """Current channel if the object is bound."""
         channel = self._channel
         if channel is None:
-            raise NotBoundError(
-                "Can't call method on {} not bound to a channel".format(
-                    type(self).__name__))
+            raise NotBoundError(f"Can't call method on {type(self).__name__} not bound to a channel")
         if isinstance(channel, ChannelPromise):
             channel = self._channel = channel()
         return channel

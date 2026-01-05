@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import socket
 from contextlib import contextmanager
 from functools import partial
 from itertools import count
@@ -16,15 +15,10 @@ from .utils.encoding import safe_repr
 from .utils.limits import TokenBucket
 from .utils.objects import cached_property
 
-__all__ = ('ConsumerMixin', 'ConsumerProducerMixin')
+__all__ = ("ConsumerMixin", "ConsumerProducerMixin")
 
 logger = get_logger(__name__)
-debug, info, warn, error = (
-    logger.debug,
-    logger.info,
-    logger.warning,
-    logger.error
-)
+debug, info, warn, error = (logger.debug, logger.info, logger.warning, logger.error)
 
 W_CONN_LOST = """\
 Connection to broker lost, trying to re-establish connection...\
@@ -137,7 +131,7 @@ class ConsumerMixin:
     should_stop = False
 
     def get_consumers(self, Consumer, channel):
-        raise NotImplementedError('Subclass responsibility')
+        raise NotImplementedError("Subclass responsibility")
 
     def on_connection_revived(self):
         pass
@@ -152,9 +146,13 @@ class ConsumerMixin:
         pass
 
     def on_decode_error(self, message, exc):
-        error("Can't decode message body: %r (type:%r encoding:%r raw:%r')",
-              exc, message.content_type, message.content_encoding,
-              safe_repr(message.body))
+        error(
+            "Can't decode message body: %r (type:%r encoding:%r raw:%r')",
+            exc,
+            message.content_type,
+            message.content_encoding,
+            safe_repr(message.body),
+        )
         message.ack()
 
     def on_connection_error(self, exc, interval):
@@ -166,8 +164,7 @@ class ConsumerMixin:
 
     def run(self, _tokens=1, **kwargs):
         restart_limit = self.restart_limit
-        errors = (self.connection.connection_errors +
-                  self.connection.channel_errors)
+        errors = self.connection.connection_errors + self.connection.channel_errors
         while not self.should_stop:
             try:
                 if restart_limit.can_consume(_tokens):  # pragma: no cover
@@ -180,21 +177,20 @@ class ConsumerMixin:
 
     @contextmanager
     def consumer_context(self, **kwargs):
-        with self.Consumer() as (connection, channel, consumers):
-            with self.extra_context(connection, channel):
-                self.on_consume_ready(connection, channel, consumers, **kwargs)
-                yield connection, channel, consumers
+        with self.Consumer() as (connection, channel, consumers), self.extra_context(connection, channel):
+            self.on_consume_ready(connection, channel, consumers, **kwargs)
+            yield connection, channel, consumers
 
     def consume(self, limit=None, timeout=None, safety_interval=1, **kwargs):
         elapsed = 0
         with self.consumer_context(**kwargs) as (conn, channel, consumers):
-            for i in limit and range(limit) or count():
+            for i in (limit and range(limit)) or count():
                 if self.should_stop:
                     break
                 self.on_iteration()
                 try:
                     conn.drain_events(timeout=safety_interval)
-                except socket.timeout:
+                except TimeoutError:
                     conn.heartbeat_check()
                     elapsed += safety_interval
                     if timeout and elapsed >= timeout:
@@ -205,7 +201,7 @@ class ConsumerMixin:
                 else:
                     yield
                     elapsed = 0
-        debug('consume exiting')
+        debug("consume exiting")
 
     def maybe_conn_error(self, fun):
         """Use :func:`kombu.common.ignore_errors` instead."""
@@ -217,23 +213,21 @@ class ConsumerMixin:
     @contextmanager
     def establish_connection(self):
         with self.create_connection() as conn:
-            conn.ensure_connection(self.on_connection_error,
-                                   self.connect_max_retries)
+            conn.ensure_connection(self.on_connection_error, self.connect_max_retries)
             yield conn
 
     @contextmanager
     def Consumer(self):
         with self.establish_connection() as conn:
             self.on_connection_revived()
-            info('Connected to %s', conn.as_uri())
+            info("Connected to %s", conn.as_uri())
             channel = conn.default_channel
-            cls = partial(Consumer, channel,
-                          on_decode_error=self.on_decode_error)
+            cls = partial(Consumer, channel, on_decode_error=self.on_decode_error)
             with self._consume_from(*self.get_consumers(cls, channel)) as c:
                 yield conn, channel, c
-            debug('Consumers canceled')
+            debug("Consumers canceled")
             self.on_consume_end(conn, channel)
-        debug('Connection closed')
+        debug("Connection closed")
 
     def _consume_from(self, *consumers):
         return nested(*consumers)
@@ -297,7 +291,6 @@ class ConsumerProducerMixin(ConsumerMixin):
     def producer_connection(self):
         if self._producer_connection is None:
             conn = self.connection.clone()
-            conn.ensure_connection(self.on_connection_error,
-                                   self.connect_max_retries)
+            conn.ensure_connection(self.on_connection_error, self.connect_max_retries)
             self._producer_connection = conn
         return self._producer_connection

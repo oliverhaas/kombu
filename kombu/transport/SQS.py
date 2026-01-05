@@ -135,7 +135,6 @@ Features
 * Supports TTL: No
 """
 
-
 from __future__ import annotations
 
 import base64
@@ -169,10 +168,8 @@ logger = get_logger(__name__)
 
 # dots are replaced by dash, dash remains dash, all other punctuation
 # replaced by underscore.
-CHARS_REPLACE_TABLE = {
-    ord(c): 0x5f for c in string.punctuation if c not in '-_.'
-}
-CHARS_REPLACE_TABLE[0x2e] = 0x2d  # '.' -> '-'
+CHARS_REPLACE_TABLE = {ord(c): 0x5F for c in string.punctuation if c not in "-_."}
+CHARS_REPLACE_TABLE[0x2E] = 0x2D  # '.' -> '-'
 
 #: SQS bulk get supports a maximum of 10 messages at a time.
 SQS_MAX_MESSAGES = 10
@@ -211,59 +208,52 @@ class QoS(virtual.QoS):
 
     def reject(self, delivery_tag, requeue=False):
         super().reject(delivery_tag, requeue=requeue)
-        routing_key, message, backoff_tasks, backoff_policy = \
-            self._extract_backoff_policy_configuration_and_message(
-                delivery_tag)
+        routing_key, message, backoff_tasks, backoff_policy = self._extract_backoff_policy_configuration_and_message(
+            delivery_tag
+        )
         if routing_key and message and backoff_tasks and backoff_policy:
-            self.apply_backoff_policy(
-                routing_key, delivery_tag, backoff_policy, backoff_tasks)
+            self.apply_backoff_policy(routing_key, delivery_tag, backoff_policy, backoff_tasks)
 
     def _extract_backoff_policy_configuration_and_message(self, delivery_tag):
         try:
             message = self._delivered[delivery_tag]
-            routing_key = message.delivery_info['routing_key']
+            routing_key = message.delivery_info["routing_key"]
         except KeyError:
             return None, None, None, None
         if not routing_key or not message:
             return None, None, None, None
         queue_config = self.channel.predefined_queues.get(routing_key, {})
-        backoff_tasks = queue_config.get('backoff_tasks')
-        backoff_policy = queue_config.get('backoff_policy')
+        backoff_tasks = queue_config.get("backoff_tasks")
+        backoff_policy = queue_config.get("backoff_policy")
         return routing_key, message, backoff_tasks, backoff_policy
 
-    def apply_backoff_policy(self, routing_key, delivery_tag,
-                             backoff_policy, backoff_tasks):
+    def apply_backoff_policy(self, routing_key, delivery_tag, backoff_policy, backoff_tasks):
         queue_url = self.channel._queue_cache[routing_key]
-        task_name, number_of_retries = \
-            self.extract_task_name_and_number_of_retries(delivery_tag)
+        task_name, number_of_retries = self.extract_task_name_and_number_of_retries(delivery_tag)
         if not task_name or not number_of_retries:
-            return None
+            return
         policy_value = backoff_policy.get(number_of_retries)
         if task_name in backoff_tasks and policy_value is not None:
             c = self.channel.sqs(routing_key)
-            c.change_message_visibility(
-                QueueUrl=queue_url,
-                ReceiptHandle=delivery_tag,
-                VisibilityTimeout=policy_value
-            )
+            c.change_message_visibility(QueueUrl=queue_url, ReceiptHandle=delivery_tag, VisibilityTimeout=policy_value)
 
     def extract_task_name_and_number_of_retries(self, delivery_tag):
         message = self._delivered[delivery_tag]
         message_headers = message.headers
-        task_name = message_headers['task']
+        task_name = message_headers["task"]
         number_of_retries = int(
-            message.properties['delivery_info']['sqs_message']
-                              ['Attributes']['ApproximateReceiveCount'])
+            message.properties["delivery_info"]["sqs_message"]["Attributes"]["ApproximateReceiveCount"]
+        )
         return task_name, number_of_retries
 
 
 class Channel(virtual.Channel):
     """SQS Channel."""
 
-    default_region = 'us-east-1'
+    default_region = "us-east-1"
     default_visibility_timeout = 1800  # 30 minutes.
     default_wait_time_seconds = 10  # up to 20 seconds max
-    domain_format = 'kombu%(vhost)s'
+    domain_format = "kombu%(vhost)s"
     _asynsqs = None
     _predefined_queue_async_clients = {}  # A client for each predefined queue
     _sqs = None
@@ -272,11 +262,11 @@ class Channel(virtual.Channel):
     _noack_queues = set()
     QoS = QoS
     # https://stackoverflow.com/questions/475074/regex-to-parse-or-validate-base64-data
-    B64_REGEX = re.compile(rb'^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$')
+    B64_REGEX = re.compile(rb"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$")
 
     def __init__(self, *args, **kwargs):
         if boto3 is None:
-            raise ImportError('boto3 is not installed')
+            raise ImportError("boto3 is not installed")
         super().__init__(*args, **kwargs)
         self._validate_predifined_queues()
 
@@ -286,7 +276,7 @@ class Channel(virtual.Channel):
         # queues that are known to already exist.
         self._update_queue_cache(self.queue_name_prefix)
 
-        self.hub = kwargs.get('hub') or get_event_loop()
+        self.hub = kwargs.get("hub") or get_event_loop()
 
     def _validate_predifined_queues(self):
         """Check that standard and FIFO queues are named properly.
@@ -295,28 +285,24 @@ class Channel(virtual.Channel):
         that ends with the .fifo suffix.
         """
         for queue_name, q in self.predefined_queues.items():
-            fifo_url = q['url'].endswith('.fifo')
-            fifo_name = queue_name.endswith('.fifo')
+            fifo_url = q["url"].endswith(".fifo")
+            fifo_name = queue_name.endswith(".fifo")
             if fifo_url and not fifo_name:
+                raise InvalidQueueException("Queue with url '{}' must have a name ending with .fifo".format(q["url"]))
+            if not fifo_url and fifo_name:
                 raise InvalidQueueException(
-                    "Queue with url '{}' must have a name "
-                    "ending with .fifo".format(q['url'])
-                )
-            elif not fifo_url and fifo_name:
-                raise InvalidQueueException(
-                    "Queue with name '{}' is not a FIFO queue: "
-                    "'{}'".format(queue_name, q['url'])
+                    "Queue with name '{}' is not a FIFO queue: '{}'".format(queue_name, q["url"])
                 )
 
     def _update_queue_cache(self, queue_name_prefix):
         if self.predefined_queues:
             for queue_name, q in self.predefined_queues.items():
-                self._queue_cache[queue_name] = q['url']
+                self._queue_cache[queue_name] = q["url"]
             return
 
         resp = self.sqs().list_queues(QueueNamePrefix=queue_name_prefix)
-        for url in resp.get('QueueUrls', []):
-            queue_name = url.split('/')[-1]
+        for url in resp.get("QueueUrls", []):
+            queue_name = url.split("/")[-1]
             self._queue_cache[queue_name] = url
 
     def basic_consume(self, queue, no_ack, *args, **kwargs):
@@ -324,9 +310,7 @@ class Channel(virtual.Channel):
             self._noack_queues.add(queue)
         if self.hub:
             self._loop1(queue)
-        return super().basic_consume(
-            queue, no_ack, *args, **kwargs
-        )
+        return super().basic_consume(queue, no_ack, *args, **kwargs)
 
     def basic_cancel(self, consumer_tag):
         if consumer_tag in self._consumers:
@@ -359,17 +343,18 @@ class Channel(virtual.Channel):
                 based on the prefetch limit).
         """
         self._cycle = scheduling.FairCycle(
-            self._get_bulk, self._active_queues, Empty,
+            self._get_bulk,
+            self._active_queues,
+            Empty,
         )
 
     def entity_name(self, name, table=CHARS_REPLACE_TABLE):
         """Format AMQP queue name into a legal SQS queue name."""
-        if name.endswith('.fifo'):
-            partial = name[:-len('.fifo')]
+        if name.endswith(".fifo"):
+            partial = name[: -len(".fifo")]
             partial = str(safe_str(partial)).translate(table)
-            return partial + '.fifo'
-        else:
-            return str(safe_str(name)).translate(table)
+            return partial + ".fifo"
+        return str(safe_str(name)).translate(table)
 
     def canonical_queue_name(self, queue_name):
         return self.entity_name(self.queue_name_prefix + queue_name)
@@ -390,14 +375,9 @@ class Channel(virtual.Channel):
             return self._queue_cache[sqs_qname]
         except KeyError:
             if self.predefined_queues:
-                raise UndefinedQueueException((
-                    "Queue with name '{}' must be "
-                    "defined in 'predefined_queues'."
-                ).format(sqs_qname))
+                raise UndefinedQueueException(f"Queue with name '{sqs_qname}' must be defined in 'predefined_queues'.")
 
-            raise DoesNotExistQueueException(
-                f"Queue with name '{sqs_qname}' doesn't exist in SQS"
-            )
+            raise DoesNotExistQueueException(f"Queue with name '{sqs_qname}' doesn't exist in SQS")
 
     def _new_queue(self, queue, **kwargs):
         """Ensure a queue with given name exists in SQS.
@@ -412,13 +392,13 @@ class Channel(virtual.Channel):
             return self._resolve_queue_url(queue)
         except DoesNotExistQueueException:
             sqs_qname = self.canonical_queue_name(queue)
-            attributes = {'VisibilityTimeout': str(self.visibility_timeout)}
-            if sqs_qname.endswith('.fifo'):
-                attributes['FifoQueue'] = 'true'
+            attributes = {"VisibilityTimeout": str(self.visibility_timeout)}
+            if sqs_qname.endswith(".fifo"):
+                attributes["FifoQueue"] = "true"
 
             resp = self._create_queue(sqs_qname, attributes)
-            self._queue_cache[sqs_qname] = resp['QueueUrl']
-            return resp['QueueUrl']
+            self._queue_cache[sqs_qname] = resp["QueueUrl"]
+            return resp["QueueUrl"]
 
     def _create_queue(self, queue_name, attributes):
         """Create an SQS queue with a given name and nominal attributes."""
@@ -428,18 +408,18 @@ class Channel(virtual.Channel):
             return None
 
         attributes.update(
-            self.transport_options.get('sqs-creation-attributes') or {},
+            self.transport_options.get("sqs-creation-attributes") or {},
         )
 
-        queue_tags = self.transport_options.get('queue_tags')
+        queue_tags = self.transport_options.get("queue_tags")
 
         create_params = {
-            'QueueName': queue_name,
-            'Attributes': attributes,
+            "QueueName": queue_name,
+            "Attributes": attributes,
         }
 
         if queue_tags:
-            create_params['tags'] = queue_tags
+            create_params["tags"] = queue_tags
 
         return self.sqs(queue=queue_name).create_queue(**create_params)
 
@@ -457,46 +437,41 @@ class Channel(virtual.Channel):
     def _put(self, queue, message, **kwargs):
         """Put message onto queue."""
         q_url = self._new_queue(queue)
-        kwargs = {'QueueUrl': q_url}
-        if 'properties' in message:
-            if 'message_attributes' in message['properties']:
+        kwargs = {"QueueUrl": q_url}
+        if "properties" in message:
+            if "message_attributes" in message["properties"]:
                 # we don't want to want to have the attribute in the body
-                kwargs['MessageAttributes'] = \
-                    message['properties'].pop('message_attributes')
-            if queue.endswith('.fifo'):
-                if 'MessageGroupId' in message['properties']:
-                    kwargs['MessageGroupId'] = \
-                        message['properties']['MessageGroupId']
+                kwargs["MessageAttributes"] = message["properties"].pop("message_attributes")
+            if queue.endswith(".fifo"):
+                if "MessageGroupId" in message["properties"]:
+                    kwargs["MessageGroupId"] = message["properties"]["MessageGroupId"]
                 else:
-                    kwargs['MessageGroupId'] = 'default'
-                if 'MessageDeduplicationId' in message['properties']:
-                    kwargs['MessageDeduplicationId'] = \
-                        message['properties']['MessageDeduplicationId']
+                    kwargs["MessageGroupId"] = "default"
+                if "MessageDeduplicationId" in message["properties"]:
+                    kwargs["MessageDeduplicationId"] = message["properties"]["MessageDeduplicationId"]
                 else:
-                    kwargs['MessageDeduplicationId'] = str(uuid.uuid4())
-            else:
-                if "DelaySeconds" in message['properties']:
-                    kwargs['DelaySeconds'] = \
-                        message['properties']['DelaySeconds']
+                    kwargs["MessageDeduplicationId"] = str(uuid.uuid4())
+            elif "DelaySeconds" in message["properties"]:
+                kwargs["DelaySeconds"] = message["properties"]["DelaySeconds"]
 
         if self.sqs_base64_encoding:
             body = AsyncMessage().encode(dumps(message))
         else:
             body = dumps(message)
-        kwargs['MessageBody'] = body
+        kwargs["MessageBody"] = body
 
         c = self.sqs(queue=self.canonical_queue_name(queue))
-        if message.get('redelivered'):
+        if message.get("redelivered"):
             c.change_message_visibility(
                 QueueUrl=q_url,
-                ReceiptHandle=message['properties']['delivery_tag'],
-                VisibilityTimeout=self.wait_time_seconds
+                ReceiptHandle=message["properties"]["delivery_tag"],
+                VisibilityTimeout=self.wait_time_seconds,
             )
         else:
             c.send_message(**kwargs)
 
     def _message_to_python(self, message, queue_name, q_url):
-        raw_msg_body = message['Body']
+        raw_msg_body = message["Body"]
         decoded_bytes = self._decode_python_message_body(raw_msg_body)
         text = bytes_to_str(decoded_bytes)
 
@@ -528,12 +503,7 @@ class Channel(virtual.Channel):
         q_url = self._new_queue(queue)
         return [self._message_to_python(m, queue, q_url) for m in messages]
 
-    def _receive_message(
-        self,
-        queue: str,
-        max_number_of_messages: int = 1,
-        wait_time_seconds: int | None = None
-    ):
+    def _receive_message(self, queue: str, max_number_of_messages: int = 1, wait_time_seconds: int | None = None):
         """Unified receive_message wrapper for SQS (boto3.client.SQS) with full attribute support.
 
         :param queue: The queue as a string
@@ -544,24 +514,21 @@ class Channel(virtual.Channel):
         q_url: str = self._new_queue(queue)
         client = self.sqs(queue=queue)
 
-        message_system_attribute_names = self.get_message_attributes.get(
-            'MessageSystemAttributeNames') or []
+        message_system_attribute_names = self.get_message_attributes.get("MessageSystemAttributeNames") or []
 
-        message_attribute_names = self.get_message_attributes.get(
-            'MessageAttributeNames') or []
+        message_attribute_names = self.get_message_attributes.get("MessageAttributeNames") or []
 
         params: dict[str, Any] = {
-            'QueueUrl': q_url,
-            'MaxNumberOfMessages': max_number_of_messages,
-            'WaitTimeSeconds': wait_time_seconds or self.wait_time_seconds,
-            'MessageAttributeNames': message_attribute_names,
-            'MessageSystemAttributeNames': message_system_attribute_names
+            "QueueUrl": q_url,
+            "MaxNumberOfMessages": max_number_of_messages,
+            "WaitTimeSeconds": wait_time_seconds or self.wait_time_seconds,
+            "MessageAttributeNames": message_attribute_names,
+            "MessageSystemAttributeNames": message_system_attribute_names,
         }
 
         return client.receive_message(**params)
 
-    def _get_bulk(self, queue,
-                  max_if_unlimited=SQS_MAX_MESSAGES, callback=None):
+    def _get_bulk(self, queue, max_if_unlimited=SQS_MAX_MESSAGES, callback=None):
         """Try to retrieve multiple messages off ``queue``.
 
         Where :meth:`_get` returns a single Payload object, this method
@@ -593,31 +560,25 @@ class Channel(virtual.Channel):
         max_count = self._get_message_estimate()
         if max_count:
             resp = self._receive_message(
-                queue=queue,
-                wait_time_seconds=self.wait_time_seconds,
-                max_number_of_messages=max_count
+                queue=queue, wait_time_seconds=self.wait_time_seconds, max_number_of_messages=max_count
             )
 
-            if resp.get('Messages'):
-                for m in resp['Messages']:
-                    m['Body'] = AsyncMessage(body=m['Body']).decode()
-                for msg in self._messages_to_python(resp['Messages'], queue):
+            if resp.get("Messages"):
+                for m in resp["Messages"]:
+                    m["Body"] = AsyncMessage(body=m["Body"]).decode()
+                for msg in self._messages_to_python(resp["Messages"], queue):
                     self.connection._deliver(msg, queue)
                 return
         raise Empty()
 
     def _get(self, queue):
         """Try to retrieve a single message off ``queue``."""
-        resp = self._receive_message(
-            queue=queue,
-            wait_time_seconds=self.wait_time_seconds,
-            max_number_of_messages=1
-        )
+        resp = self._receive_message(queue=queue, wait_time_seconds=self.wait_time_seconds, max_number_of_messages=1)
 
-        if resp.get('Messages'):
-            body = AsyncMessage(body=resp['Messages'][0]['Body']).decode()
-            resp['Messages'][0]['Body'] = body
-            return self._messages_to_python(resp['Messages'], queue)[0]
+        if resp.get("Messages"):
+            body = AsyncMessage(body=resp["Messages"][0]["Body"]).decode()
+            resp["Messages"][0]["Body"] = body
+            return self._messages_to_python(resp["Messages"], queue)[0]
         raise Empty()
 
     def _loop1(self, queue, _=None):
@@ -627,7 +588,8 @@ class Channel(virtual.Channel):
         if queue in self._active_queues:
             if self.qos.can_consume():
                 self._get_bulk_async(
-                    queue, callback=promise(self._loop1, (queue,)),
+                    queue,
+                    callback=promise(self._loop1, (queue,)),
                 )
             else:
                 self._loop1(queue)
@@ -652,34 +614,34 @@ class Channel(virtual.Channel):
         q_url = self._new_queue(queue)
         qname = self.canonical_queue_name(queue)
         return self._get_from_sqs(
-            queue_name=qname, queue_url=q_url, count=count,
+            queue_name=qname,
+            queue_url=q_url,
+            count=count,
             connection=self.asynsqs(queue=qname),
-            callback=transform(
-                self._on_messages_ready, callback, q_url, queue
-            ),
+            callback=transform(self._on_messages_ready, callback, q_url, queue),
         )
 
     def _on_messages_ready(self, queue, qname, messages):
-        if 'Messages' in messages and messages['Messages']:
+        if messages.get("Messages"):
             callbacks = self.connection._callbacks
-            for msg in messages['Messages']:
+            for msg in messages["Messages"]:
                 msg_parsed = self._message_to_python(msg, qname, queue)
                 callbacks[qname](msg_parsed)
 
-    def _get_from_sqs(self, queue_name, queue_url,
-                      connection, count=1, callback=None):
+    def _get_from_sqs(self, queue_name, queue_url, connection, count=1, callback=None):
         """Retrieve and handle messages from SQS.
 
         Uses long polling and returns :class:`~vine.promises.promise`.
         """
         return connection.receive_message(
-            queue_name, queue_url, number_messages=count,
+            queue_name,
+            queue_url,
+            number_messages=count,
             wait_time_seconds=self.wait_time_seconds,
             callback=callback,
         )
 
-    def _restore(self, message,
-                 unwanted_delivery_info=('sqs_message', 'sqs_queue')):
+    def _restore(self, message, unwanted_delivery_info=("sqs_message", "sqs_queue")):
         for unwanted_key in unwanted_delivery_info:
             # Remove objects that aren't JSON serializable (Issue #1108).
             message.delivery_info.pop(unwanted_key, None)
@@ -688,24 +650,21 @@ class Channel(virtual.Channel):
     def basic_ack(self, delivery_tag, multiple=False):
         try:
             message = self.qos.get(delivery_tag).delivery_info
-            sqs_message = message['sqs_message']
+            sqs_message = message["sqs_message"]
         except KeyError:
             super().basic_ack(delivery_tag)
         else:
             queue = None
-            if 'routing_key' in message:
-                queue = self.canonical_queue_name(message['routing_key'])
+            if "routing_key" in message:
+                queue = self.canonical_queue_name(message["routing_key"])
 
             try:
                 self.sqs(queue=queue).delete_message(
-                    QueueUrl=message['sqs_queue'],
-                    ReceiptHandle=sqs_message['ReceiptHandle']
+                    QueueUrl=message["sqs_queue"], ReceiptHandle=sqs_message["ReceiptHandle"]
                 )
             except ClientError as exception:
-                if exception.response['Error']['Code'] == 'AccessDenied':
-                    raise AccessDeniedQueueException(
-                        exception.response["Error"]["Message"]
-                        )
+                if exception.response["Error"]["Code"] == "AccessDenied":
+                    raise AccessDeniedQueueException(exception.response["Error"]["Message"])
                 super().basic_reject(delivery_tag)
             else:
                 super().basic_ack(delivery_tag)
@@ -714,10 +673,8 @@ class Channel(virtual.Channel):
         """Return the number of messages in a queue."""
         q_url = self._new_queue(queue)
         c = self.sqs(queue=self.canonical_queue_name(queue))
-        resp = c.get_queue_attributes(
-            QueueUrl=q_url,
-            AttributeNames=['ApproximateNumberOfMessages'])
-        return int(resp['Attributes']['ApproximateNumberOfMessages'])
+        resp = c.get_queue_attributes(QueueUrl=q_url, AttributeNames=["ApproximateNumberOfMessages"])
+        return int(resp["Attributes"]["ApproximateNumberOfMessages"])
 
     def _purge(self, queue):
         """Delete all current messages in a queue."""
@@ -741,8 +698,7 @@ class Channel(virtual.Channel):
         #         if "can't set attribute" not in str(exc):
         #             raise
 
-    def new_sqs_client(self, region, access_key_id,
-                       secret_access_key, session_token=None):
+    def new_sqs_client(self, region, access_key_id, secret_access_key, session_token=None):
         session = boto3.session.Session(
             region_name=region,
             aws_access_key_id=access_key_id,
@@ -750,38 +706,29 @@ class Channel(virtual.Channel):
             aws_session_token=session_token,
         )
         is_secure = self.is_secure if self.is_secure is not None else True
-        client_kwargs = {
-            'use_ssl': is_secure
-        }
+        client_kwargs = {"use_ssl": is_secure}
         if self.endpoint_url is not None:
-            client_kwargs['endpoint_url'] = self.endpoint_url
-        client_config = self.transport_options.get('client-config') or {}
+            client_kwargs["endpoint_url"] = self.endpoint_url
+        client_config = self.transport_options.get("client-config") or {}
         config = Config(**client_config)
-        return session.client('sqs', config=config, **client_kwargs)
+        return session.client("sqs", config=config, **client_kwargs)
 
     def sqs(self, queue=None):
         if queue is not None and self.predefined_queues:
-
             if queue not in self.predefined_queues:
-                raise UndefinedQueueException(
-                    f"Queue with name '{queue}' must be defined"
-                    " in 'predefined_queues'.")
+                raise UndefinedQueueException(f"Queue with name '{queue}' must be defined in 'predefined_queues'.")
             q = self.predefined_queues[queue]
-            if self.transport_options.get('sts_role_arn'):
+            if self.transport_options.get("sts_role_arn"):
                 return self._handle_sts_session(queue, q)
-            if not self.transport_options.get('sts_role_arn'):
+            if not self.transport_options.get("sts_role_arn"):
                 if queue in self._predefined_queue_clients:
                     return self._predefined_queue_clients[queue]
-                else:
-                    c = self._predefined_queue_clients[queue] = \
-                        self.new_sqs_client(
-                            region=q.get('region', self.region),
-                            access_key_id=q.get(
-                                'access_key_id', self.conninfo.userid),
-                            secret_access_key=q.get(
-                                'secret_access_key', self.conninfo.password)
-                    )
-                    return c
+                c = self._predefined_queue_clients[queue] = self.new_sqs_client(
+                    region=q.get("region", self.region),
+                    access_key_id=q.get("access_key_id", self.conninfo.userid),
+                    secret_access_key=q.get("secret_access_key", self.conninfo.password),
+                )
+                return c
 
         if self._sqs is not None:
             return self._sqs
@@ -794,16 +741,15 @@ class Channel(virtual.Channel):
         return c
 
     def _handle_sts_session(self, queue, q):
-        region = q.get('region', self.region)
-        if not hasattr(self, 'sts_expiration'):  # STS token - token init
+        region = q.get("region", self.region)
+        if not hasattr(self, "sts_expiration") or self.sts_expiration.replace(tzinfo=None) < datetime.now(
+            timezone.utc
+        ).replace(tzinfo=None):  # STS token - token init
             return self._new_predefined_queue_client_with_sts_session(queue, region)
-        # STS token - refresh if expired
-        elif self.sts_expiration.replace(tzinfo=None) < datetime.now(timezone.utc).replace(tzinfo=None):
+        # STS token - ruse existing
+        if queue not in self._predefined_queue_clients:
             return self._new_predefined_queue_client_with_sts_session(queue, region)
-        else:  # STS token - ruse existing
-            if queue not in self._predefined_queue_clients:
-                return self._new_predefined_queue_client_with_sts_session(queue, region)
-            return self._predefined_queue_clients[queue]
+        return self._predefined_queue_clients[queue]
 
     def generate_sts_session_token_with_buffer(self, role_arn, token_expiry_seconds, token_buffer_seconds=0):
         """Generate STS session credentials with an optional expiration buffer.
@@ -817,50 +763,41 @@ class Channel(virtual.Channel):
 
     def _new_predefined_queue_client_with_sts_session(self, queue, region):
         sts_creds = self.generate_sts_session_token_with_buffer(
-            self.transport_options.get('sts_role_arn'),
-            self.transport_options.get('sts_token_timeout', 900),
-            self.transport_options.get('sts_token_buffer_time', 0),
+            self.transport_options.get("sts_role_arn"),
+            self.transport_options.get("sts_token_timeout", 900),
+            self.transport_options.get("sts_token_buffer_time", 0),
         )
-        self.sts_expiration = sts_creds['Expiration']
+        self.sts_expiration = sts_creds["Expiration"]
         c = self._predefined_queue_clients[queue] = self.new_sqs_client(
             region=region,
-            access_key_id=sts_creds['AccessKeyId'],
-            secret_access_key=sts_creds['SecretAccessKey'],
-            session_token=sts_creds['SessionToken'],
+            access_key_id=sts_creds["AccessKeyId"],
+            secret_access_key=sts_creds["SecretAccessKey"],
+            session_token=sts_creds["SessionToken"],
         )
         return c
 
     def generate_sts_session_token(self, role_arn, token_expiry_seconds):
-        sts_client = boto3.client('sts')
+        sts_client = boto3.client("sts")
         sts_policy = sts_client.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName='Celery',
-            DurationSeconds=token_expiry_seconds
+            RoleArn=role_arn, RoleSessionName="Celery", DurationSeconds=token_expiry_seconds
         )
-        return sts_policy['Credentials']
+        return sts_policy["Credentials"]
 
     def asynsqs(self, queue=None):
-        message_system_attribute_names = self.get_message_attributes.get(
-            'MessageSystemAttributeNames')
-        message_attribute_names = self.get_message_attributes.get(
-            'MessageAttributeNames')
+        message_system_attribute_names = self.get_message_attributes.get("MessageSystemAttributeNames")
+        message_attribute_names = self.get_message_attributes.get("MessageAttributeNames")
 
         if queue is not None and self.predefined_queues:
-            if queue in self._predefined_queue_async_clients and \
-               not hasattr(self, 'sts_expiration'):
+            if queue in self._predefined_queue_async_clients and not hasattr(self, "sts_expiration"):
                 return self._predefined_queue_async_clients[queue]
             if queue not in self.predefined_queues:
-                raise UndefinedQueueException((
-                    "Queue with name '{}' must be defined in "
-                    "'predefined_queues'."
-                ).format(queue))
+                raise UndefinedQueueException(f"Queue with name '{queue}' must be defined in 'predefined_queues'.")
             q = self.predefined_queues[queue]
-            c = self._predefined_queue_async_clients[queue] = \
-                AsyncSQSConnection(
-                    sqs_connection=self.sqs(queue=queue),
-                    region=q.get('region', self.region),
-                    message_system_attribute_names=message_system_attribute_names,
-                    message_attribute_names=message_attribute_names
+            c = self._predefined_queue_async_clients[queue] = AsyncSQSConnection(
+                sqs_connection=self.sqs(queue=queue),
+                region=q.get("region", self.region),
+                message_system_attribute_names=message_system_attribute_names,
+                message_attribute_names=message_attribute_names,
             )
             return c
 
@@ -871,7 +808,7 @@ class Channel(virtual.Channel):
             sqs_connection=self.sqs(queue=queue),
             region=self.region,
             message_system_attribute_names=message_system_attribute_names,
-            message_attribute_names=message_attribute_names
+            message_attribute_names=message_attribute_names,
         )
         return c
 
@@ -885,17 +822,16 @@ class Channel(virtual.Channel):
 
     @cached_property
     def visibility_timeout(self):
-        return (self.transport_options.get('visibility_timeout') or
-                self.default_visibility_timeout)
+        return self.transport_options.get("visibility_timeout") or self.default_visibility_timeout
 
     @cached_property
     def predefined_queues(self):
         """Map of queue_name to predefined queue settings."""
-        return self.transport_options.get('predefined_queues', {})
+        return self.transport_options.get("predefined_queues", {})
 
     @cached_property
     def queue_name_prefix(self):
-        return self.transport_options.get('queue_name_prefix', '')
+        return self.transport_options.get("queue_name_prefix", "")
 
     @cached_property
     def supports_fanout(self):
@@ -903,48 +839,41 @@ class Channel(virtual.Channel):
 
     @cached_property
     def region(self):
-        return (self.transport_options.get('region') or
-                boto3.Session().region_name or
-                self.default_region)
+        return self.transport_options.get("region") or boto3.Session().region_name or self.default_region
 
     @cached_property
     def regioninfo(self):
-        return self.transport_options.get('regioninfo')
+        return self.transport_options.get("regioninfo")
 
     @cached_property
     def is_secure(self):
-        return self.transport_options.get('is_secure')
+        return self.transport_options.get("is_secure")
 
     @cached_property
     def port(self):
-        return self.transport_options.get('port')
+        return self.transport_options.get("port")
 
     @cached_property
     def endpoint_url(self):
         if self.conninfo.hostname is not None:
-            scheme = 'https' if self.is_secure else 'http'
+            scheme = "https" if self.is_secure else "http"
             if self.conninfo.port is not None:
-                port = f':{self.conninfo.port}'
+                port = f":{self.conninfo.port}"
             else:
-                port = ''
-            return '{}://{}{}'.format(
-                scheme,
-                self.conninfo.hostname,
-                port
-            )
+                port = ""
+            return f"{scheme}://{self.conninfo.hostname}{port}"
 
     @cached_property
     def wait_time_seconds(self) -> int:
-        return self.transport_options.get('wait_time_seconds',
-                                          self.default_wait_time_seconds)
+        return self.transport_options.get("wait_time_seconds", self.default_wait_time_seconds)
 
     @cached_property
     def sqs_base64_encoding(self):
-        return self.transport_options.get('sqs_base64_encoding', True)
+        return self.transport_options.get("sqs_base64_encoding", True)
 
     @cached_property
     def fetch_message_attributes(self):
-        return self.transport_options.get('fetch_message_attributes', None)
+        return self.transport_options.get("fetch_message_attributes", None)
 
     @property
     def get_message_attributes(self) -> dict[str, Any]:
@@ -958,41 +887,43 @@ class Channel(virtual.Channel):
 
         :return: A dictionary with SQS message attribute fetch config.
         """
-        APPROXIMATE_RECEIVE_COUNT = 'ApproximateReceiveCount'
+        APPROXIMATE_RECEIVE_COUNT = "ApproximateReceiveCount"
         fetch = self.fetch_message_attributes
         message_system_attrs = None
         message_attrs = None
 
         if fetch is None or isinstance(fetch, str):
             return {
-                'MessageAttributeNames': [],
-                'MessageSystemAttributeNames': [APPROXIMATE_RECEIVE_COUNT],
+                "MessageAttributeNames": [],
+                "MessageSystemAttributeNames": [APPROXIMATE_RECEIVE_COUNT],
             }
 
         if isinstance(fetch, list):
-            message_system_attrs = ['ALL'] if 'ALL'.lower() in [s.lower() for s in fetch] else (
-                list(set(fetch + [APPROXIMATE_RECEIVE_COUNT]))
+            message_system_attrs = (
+                ["ALL"]
+                if "ALL".lower() in [s.lower() for s in fetch]
+                else (list(set(fetch + [APPROXIMATE_RECEIVE_COUNT])))
             )
 
         elif isinstance(fetch, dict):
-            system = fetch.get('MessageSystemAttributeNames', [])
-            attrs = fetch.get('MessageAttributeNames', None)
+            system = fetch.get("MessageSystemAttributeNames", [])
+            attrs = fetch.get("MessageAttributeNames", None)
 
             if isinstance(system, list):
-                message_system_attrs = ['ALL'] if 'ALL'.lower() in [s.lower() for s in system] else (
-                    list(set(system + [APPROXIMATE_RECEIVE_COUNT]))
+                message_system_attrs = (
+                    ["ALL"]
+                    if "ALL".lower() in [s.lower() for s in system]
+                    else (list(set(system + [APPROXIMATE_RECEIVE_COUNT])))
                 )
 
             if isinstance(attrs, list) and attrs:
-                message_attrs = ['ALL'] if 'ALL'.lower() in [s.lower() for s in attrs] else (
-                    list(set(attrs))
-                )
+                message_attrs = ["ALL"] if "ALL".lower() in [s.lower() for s in attrs] else (list(set(attrs)))
 
         return {
-            'MessageAttributeNames': sorted(message_attrs) if message_attrs else [],
-            'MessageSystemAttributeNames': (
+            "MessageAttributeNames": sorted(message_attrs) if message_attrs else [],
+            "MessageSystemAttributeNames": (
                 sorted(message_system_attrs) if message_system_attrs else [APPROXIMATE_RECEIVE_COUNT]
-            )
+            ),
         }
 
     # —————————————————————————————————————————————————————————————
@@ -1015,12 +946,12 @@ class Channel(virtual.Channel):
         except (binascii.Error, ValueError):
             return raw
 
-        reencoded = base64.b64encode(decoded).rstrip(b'=')
-        if reencoded != candidate.rstrip(b'='):
+        reencoded = base64.b64encode(decoded).rstrip(b"=")
+        if reencoded != candidate.rstrip(b"="):
             return raw
 
         try:
-            decoded.decode('utf-8')
+            decoded.decode("utf-8")
         except UnicodeDecodeError:
             return raw
 
@@ -1046,9 +977,7 @@ class Channel(virtual.Channel):
     def _delete_message(self, queue_name, message):
         """Move the message over to the new queue URL and delete it."""
         new_q = self._new_queue(queue_name)
-        self.asynsqs(queue=queue_name).delete_message(
-            new_q, message['ReceiptHandle']
-        )
+        self.asynsqs(queue=queue_name).delete_message(new_q, message["ReceiptHandle"])
 
     def _envelope_payload(self, payload, raw_text, message, q_url):
         """Prepare the payload envelope.
@@ -1064,21 +993,23 @@ class Channel(virtual.Channel):
         :return: Payload object.
         """
         # if payload wasn’t already a Kombu JSON dict, wrap it
-        if 'properties' not in payload:
+        if "properties" not in payload:
             payload = {
-                'body': raw_text,
-                'properties': {'delivery_info': {}},
+                "body": raw_text,
+                "properties": {"delivery_info": {}},
             }
 
-        props = payload.setdefault('properties', {})
-        di = props.setdefault('delivery_info', {})
+        props = payload.setdefault("properties", {})
+        di = props.setdefault("delivery_info", {})
 
         # add SQS metadata
-        di.update({
-            'sqs_message': message,
-            'sqs_queue':   q_url,
-        })
-        props['delivery_tag'] = message['ReceiptHandle']
+        di.update(
+            {
+                "sqs_message": message,
+                "sqs_queue": q_url,
+            }
+        )
+        props["delivery_tag"] = message["ReceiptHandle"]
 
         return payload
 
@@ -1157,28 +1088,23 @@ class Transport(virtual.Transport):
         )
     .. _Message Attributes: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html#SQS-ReceiveMessage-request-AttributeNames
 
-    """  # noqa: E501
+    """
 
     Channel = Channel
 
     polling_interval = 1
     wait_time_seconds = 0
     default_port = None
-    connection_errors = (
-        virtual.Transport.connection_errors +
-        (exceptions.BotoCoreError, socket.error)
-    )
-    channel_errors = (
-        virtual.Transport.channel_errors + (exceptions.BotoCoreError,)
-    )
-    driver_type = 'sqs'
-    driver_name = 'sqs'
+    connection_errors = virtual.Transport.connection_errors + (exceptions.BotoCoreError, socket.error)
+    channel_errors = virtual.Transport.channel_errors + (exceptions.BotoCoreError,)
+    driver_type = "sqs"
+    driver_name = "sqs"
 
     implements = virtual.Transport.implements.extend(
         asynchronous=True,
-        exchange_type=frozenset(['direct']),
+        exchange_type=frozenset(["direct"]),
     )
 
     @property
     def default_connection_params(self):
-        return {'port': self.default_port}
+        return {"port": self.default_port}

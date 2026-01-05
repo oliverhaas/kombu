@@ -2,6 +2,7 @@
 
 Only relevant for RabbitMQ.
 """
+
 from __future__ import annotations
 
 from kombu import Connection, Exchange, Queue, binding
@@ -31,12 +32,11 @@ def declare_native_delayed_delivery_exchanges_and_queues(connection: Connection,
 
     routing_key: str = "1.#"
 
-    for level in range(27, -1, - 1):
+    for level in range(27, -1, -1):
         current_level = level_name(level)
         next_level = level_name(level - 1) if level > 0 else None
 
-        delayed_exchange: Exchange = Exchange(
-            current_level, type="topic").bind(channel)
+        delayed_exchange: Exchange = Exchange(current_level, type="topic").bind(channel)
         delayed_exchange.declare()
 
         queue_arguments = {
@@ -46,32 +46,27 @@ def declare_native_delayed_delivery_exchanges_and_queues(connection: Connection,
             "x-dead-letter-exchange": next_level if level > 0 else CELERY_DELAYED_DELIVERY_EXCHANGE,
         }
 
-        if queue_type == 'quorum':
+        if queue_type == "quorum":
             queue_arguments["x-dead-letter-strategy"] = "at-least-once"
 
-        delayed_queue: Queue = Queue(
-            current_level,
-            queue_arguments=queue_arguments
-        ).bind(channel)
+        delayed_queue: Queue = Queue(current_level, queue_arguments=queue_arguments).bind(channel)
         delayed_queue.declare()
         delayed_queue.bind_to(current_level, routing_key)
 
         routing_key = "*." + routing_key
 
     routing_key = "0.#"
-    for level in range(27, 0, - 1):
+    for level in range(27, 0, -1):
         current_level = level_name(level)
         next_level = level_name(level - 1) if level > 0 else None
 
-        next_level_exchange: Exchange = Exchange(
-            next_level, type="topic").bind(channel)
+        next_level_exchange: Exchange = Exchange(next_level, type="topic").bind(channel)
 
         next_level_exchange.bind_to(current_level, routing_key)
 
         routing_key = "*." + routing_key
 
-    delivery_exchange: Exchange = Exchange(
-        CELERY_DELAYED_DELIVERY_EXCHANGE, type="topic").bind(channel)
+    delivery_exchange: Exchange = Exchange(CELERY_DELAYED_DELIVERY_EXCHANGE, type="topic").bind(channel)
     delivery_exchange.declare()
     delivery_exchange.bind_to(level_name(0), routing_key)
 
@@ -101,24 +96,23 @@ def bind_queue_to_native_delayed_delivery_exchange(connection: Connection, queue
     bindings: set[binding] = set()
 
     if queue.exchange:
-        bindings.add(binding(
-            queue.exchange,
-            routing_key=queue.routing_key,
-            arguments=queue.binding_arguments
-        ))
+        bindings.add(binding(queue.exchange, routing_key=queue.routing_key, arguments=queue.binding_arguments))
     elif queue.bindings:
         bindings = queue.bindings
 
     for binding_entry in bindings:
         exchange: Exchange = binding_entry.exchange.bind(channel)
-        if exchange.type == 'direct':
-            logger.warning(f"Exchange {exchange.name} is a direct exchange "
-                           f"and native delayed delivery do not support direct exchanges.\n"
-                           f"ETA tasks published to this exchange will block the worker until the ETA arrives.")
+        if exchange.type == "direct":
+            logger.warning(
+                f"Exchange {exchange.name} is a direct exchange "
+                f"and native delayed delivery do not support direct exchanges.\n"
+                f"ETA tasks published to this exchange will block the worker until the ETA arrives."
+            )
             continue
 
-        routing_key = binding_entry.routing_key if binding_entry.routing_key.startswith(
-            '#') else f"#.{binding_entry.routing_key}"
+        routing_key = (
+            binding_entry.routing_key if binding_entry.routing_key.startswith("#") else f"#.{binding_entry.routing_key}"
+        )
         exchange.bind_to(CELERY_DELAYED_DELIVERY_EXCHANGE, routing_key=routing_key)
         queue.bind_to(exchange.name, routing_key=routing_key)
 
@@ -131,4 +125,4 @@ def calculate_routing_key(countdown: int, routing_key: str) -> str:
     if not routing_key:
         raise ValueError("routing_key must be non-empty")
 
-    return '.'.join(list(f'{countdown:028b}')) + f'.{routing_key}'
+    return ".".join(list(f"{countdown:028b}")) + f".{routing_key}"

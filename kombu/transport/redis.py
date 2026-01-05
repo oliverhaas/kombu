@@ -25,7 +25,8 @@ from __future__ import annotations
 import asyncio
 import re
 import uuid
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 try:
     import redis.asyncio as aioredis
@@ -40,16 +41,16 @@ from kombu.utils.json import loads as json_loads
 if TYPE_CHECKING:
     from kombu.entity import Exchange, Queue
 
-__all__ = ('Transport', 'Channel')
+__all__ = ("Channel", "Transport")
 
-logger = get_logger('kombu.transport.redis')
+logger = get_logger("kombu.transport.redis")
 
 # Default exchange name
-DEFAULT_EXCHANGE = ''
+DEFAULT_EXCHANGE = ""
 
 # Key prefixes for Redis
-QUEUE_KEY_PREFIX = '_kombu.binding.'
-UNACKED_KEY_PREFIX = '_kombu.unacked.'
+QUEUE_KEY_PREFIX = "_kombu.binding."
+UNACKED_KEY_PREFIX = "_kombu.unacked."
 
 
 def _queue_key(queue: str) -> str:
@@ -59,7 +60,7 @@ def _queue_key(queue: str) -> str:
 
 def _binding_key(exchange: str) -> str:
     """Get Redis key for storing exchange bindings."""
-    return f'{QUEUE_KEY_PREFIX}{exchange}'
+    return f"{QUEUE_KEY_PREFIX}{exchange}"
 
 
 class Channel:
@@ -92,7 +93,7 @@ class Channel:
     def _next_delivery_tag(self) -> str:
         """Generate next delivery tag."""
         self._delivery_tag_counter += 1
-        return f'{self._channel_id}.{self._delivery_tag_counter}'
+        return f"{self._channel_id}.{self._delivery_tag_counter}"
 
     async def close(self) -> None:
         """Close the channel."""
@@ -106,8 +107,9 @@ class Channel:
                 await self.client.lpush(_queue_key(queue), data)
             except Exception:
                 logger.warning(
-                    'Failed to requeue message %s to %s',
-                    delivery_tag, queue,
+                    "Failed to requeue message %s to %s",
+                    delivery_tag,
+                    queue,
                 )
         self._unacked.clear()
         self._consumers.clear()
@@ -120,10 +122,10 @@ class Channel:
         For Redis, we just store metadata about the exchange.
         """
         self._exchanges[exchange.name] = {
-            'type': exchange.type,
-            'durable': exchange.durable,
-            'auto_delete': exchange.auto_delete,
-            'arguments': exchange.arguments,
+            "type": exchange.type,
+            "durable": exchange.durable,
+            "auto_delete": exchange.auto_delete,
+            "arguments": exchange.arguments,
         }
 
     async def exchange_delete(self, exchange: str) -> None:
@@ -141,7 +143,7 @@ class Channel:
         For Redis, queues are created on first use.
         Returns the queue name.
         """
-        name = queue.name or f'amq.gen-{uuid.uuid4()}'
+        name = queue.name or f"amq.gen-{uuid.uuid4()}"
         queue.name = name
 
         # Store binding if exchange is specified
@@ -157,7 +159,7 @@ class Channel:
         self,
         queue: str,
         exchange: str,
-        routing_key: str = '',
+        routing_key: str = "",
         arguments: dict | None = None,
     ) -> None:
         """Bind a queue to an exchange."""
@@ -169,14 +171,14 @@ class Channel:
             self._bindings[exchange].append(binding)
 
         # Store binding in Redis for persistence
-        binding_data = json_dumps({'queue': queue, 'routing_key': routing_key})
+        binding_data = json_dumps({"queue": queue, "routing_key": routing_key})
         await self.client.sadd(_binding_key(exchange), binding_data)
 
     async def queue_unbind(
         self,
         queue: str,
         exchange: str,
-        routing_key: str = '',
+        routing_key: str = "",
         arguments: dict | None = None,
     ) -> None:
         """Unbind a queue from an exchange."""
@@ -186,7 +188,7 @@ class Channel:
                 self._bindings[exchange].remove(binding)
 
         # Remove from Redis
-        binding_data = json_dumps({'queue': queue, 'routing_key': routing_key})
+        binding_data = json_dumps({"queue": queue, "routing_key": routing_key})
         await self.client.srem(_binding_key(exchange), binding_data)
 
     async def queue_purge(self, queue: str) -> int:
@@ -215,9 +217,7 @@ class Channel:
 
         # Remove from all exchange bindings
         for exchange, bindings in list(self._bindings.items()):
-            self._bindings[exchange] = [
-                (q, rk) for q, rk in bindings if q != queue
-            ]
+            self._bindings[exchange] = [(q, rk) for q, rk in bindings if q != queue]
 
         return length
 
@@ -238,12 +238,12 @@ class Channel:
         - topic: Route to queues with matching pattern
         """
         exchange = exchange or DEFAULT_EXCHANGE
-        exchange_meta = self._exchanges.get(exchange, {'type': 'direct'})
-        exchange_type = exchange_meta.get('type', 'direct')
+        exchange_meta = self._exchanges.get(exchange, {"type": "direct"})
+        exchange_type = exchange_meta.get("type", "direct")
 
-        if exchange_type == 'fanout':
+        if exchange_type == "fanout":
             await self._fanout_publish(exchange, message)
-        elif exchange_type == 'topic':
+        elif exchange_type == "topic":
             await self._topic_publish(exchange, routing_key, message)
         else:
             await self._direct_publish(exchange, routing_key, message)
@@ -298,10 +298,10 @@ class Channel:
         - # matches zero or more words
         """
         # Convert AMQP pattern to regex
-        regex_pattern = pattern.replace('.', r'\.')
-        regex_pattern = regex_pattern.replace('*', r'[^.]+')
-        regex_pattern = regex_pattern.replace('#', r'.*')
-        regex_pattern = f'^{regex_pattern}$'
+        regex_pattern = pattern.replace(".", r"\.")
+        regex_pattern = regex_pattern.replace("*", r"[^.]+")
+        regex_pattern = regex_pattern.replace("#", r".*")
+        regex_pattern = f"^{regex_pattern}$"
         return bool(re.match(regex_pattern, routing_key))
 
     async def get(
@@ -405,23 +405,23 @@ class Channel:
         try:
             # Parse the message envelope
             payload = json_loads(data)
-            body = payload.get('body', data)
-            content_type = payload.get('content-type', 'application/json')
-            content_encoding = payload.get('content-encoding', 'utf-8')
-            properties = payload.get('properties', {})
-            headers = payload.get('headers', {})
+            body = payload.get("body", data)
+            content_type = payload.get("content-type", "application/json")
+            content_encoding = payload.get("content-encoding", "utf-8")
+            properties = payload.get("properties", {})
+            headers = payload.get("headers", {})
 
             # Convert body back to bytes for proper deserialization
             if isinstance(body, str):
                 body = body.encode(content_encoding)
             elif isinstance(body, dict) or isinstance(body, list):
                 # Body is already decoded JSON - re-encode it
-                body = json_dumps(body).encode('utf-8')
+                body = json_dumps(body).encode("utf-8")
         except (ValueError, TypeError):
             # Raw message, no envelope
             body = data
-            content_type = 'application/data'
-            content_encoding = 'binary'
+            content_type = "application/data"
+            content_encoding = "binary"
             properties = {}
             headers = {}
 
@@ -437,8 +437,8 @@ class Channel:
             content_type=content_type,
             content_encoding=content_encoding,
             delivery_info={
-                'exchange': '',
-                'routing_key': queue,
+                "exchange": "",
+                "routing_key": queue,
             },
             properties=properties,
             headers=headers,
@@ -489,14 +489,11 @@ class Transport:
 
     def __init__(
         self,
-        url: str = 'redis://localhost:6379',
+        url: str = "redis://localhost:6379",
         **options: Any,
     ):
         if aioredis is None:
-            raise ImportError(
-                'redis package is required for Redis transport. '
-                'Install it with: pip install redis'
-            )
+            raise ImportError("redis package is required for Redis transport. Install it with: pip install redis")
         self._url = url
         self._options = options
         self._client: aioredis.Redis | None = None
@@ -518,7 +515,7 @@ class Transport:
         # Test connection
         await self._client.ping()
         self._connected = True
-        logger.debug('Connected to Redis at %s', self._url)
+        logger.debug("Connected to Redis at %s", self._url)
 
     async def close(self) -> None:
         """Close the transport and all channels."""

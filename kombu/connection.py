@@ -19,9 +19,11 @@ from .transport.redis import Transport
 
 if TYPE_CHECKING:
     from .entity import Queue
+    from .messaging import Consumer, Producer
+    from .simple import SimpleQueue
     from .transport.redis import Channel
 
-__all__ = ('Connection',)
+__all__ = ("Connection",)
 
 logger = get_logger(__name__)
 
@@ -45,7 +47,7 @@ class Connection:
 
     def __init__(
         self,
-        hostname: str = 'redis://localhost:6379',
+        hostname: str = "redis://localhost:6379",
         transport_options: dict | None = None,
         **kwargs: Any,
     ):
@@ -57,7 +59,7 @@ class Connection:
 
         # Parse URL for validation
         parsed = urlparse(hostname)
-        if parsed.scheme not in ('redis', 'rediss'):
+        if parsed.scheme not in ("redis", "rediss"):
             raise ValueError(
                 f"Unsupported transport scheme: {parsed.scheme}. "
                 "This pure asyncio Kombu only supports 'redis://' and 'rediss://'."
@@ -84,7 +86,7 @@ class Connection:
                 **self._transport_options,
             )
         await self._transport.connect()
-        logger.debug('Connected to %s', self._url)
+        logger.debug("Connected to %s", self._url)
         return self
 
     async def close(self) -> None:
@@ -133,6 +135,7 @@ class Connection:
             A Producer instance.
         """
         from .messaging import Producer
+
         return Producer(self, channel=channel, **kwargs)
 
     def Consumer(
@@ -152,6 +155,7 @@ class Connection:
             A Consumer instance.
         """
         from .messaging import Consumer
+
         return Consumer(self, queues=queues, channel=channel, **kwargs)
 
     def SimpleQueue(
@@ -177,6 +181,7 @@ class Connection:
             A SimpleQueue instance.
         """
         from .simple import SimpleQueue
+
         return SimpleQueue(
             self,
             name=name,
@@ -198,12 +203,11 @@ class Connection:
         Raises:
             socket.timeout: If timeout is reached with no events.
         """
-        import socket
 
         channel = await self.default_channel()
         delivered = await channel.drain_events(timeout=timeout)
         if not delivered and timeout:
-            raise socket.timeout('timed out')
+            raise TimeoutError("timed out")
 
     async def ensure_connection(
         self,
@@ -244,8 +248,9 @@ class Connection:
                     callback(exc, interval)
 
                 logger.warning(
-                    'Connection failed, retrying in %.2fs: %r',
-                    interval, exc,
+                    "Connection failed, retrying in %.2fs: %r",
+                    interval,
+                    exc,
                 )
                 await aio.sleep(interval)
 
@@ -262,10 +267,8 @@ class Connection:
             A new Connection instance.
         """
         return Connection(
-            hostname=kwargs.pop('hostname', self._url),
-            transport_options=kwargs.pop(
-                'transport_options', self._transport_options.copy()
-            ),
+            hostname=kwargs.pop("hostname", self._url),
+            transport_options=kwargs.pop("transport_options", self._transport_options.copy()),
             **kwargs,
         )
 
@@ -288,7 +291,7 @@ class Connection:
         await self.close()
 
     def __repr__(self) -> str:
-        return f'<Connection: {self._url} connected={self.is_connected}>'
+        return f"<Connection: {self._url} connected={self.is_connected}>"
 
     # Aliases for backwards compatibility concepts
     @property

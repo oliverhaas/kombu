@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from fnmatch import fnmatch
 from re import match as rematch
-from typing import Callable, cast
+from typing import cast
 
 from .utils.compat import entrypoints
 from .utils.encoding import bytes_to_str
@@ -20,7 +21,7 @@ class MatcherRegistry:
     """Pattern matching function registry."""
 
     MatcherNotInstalled = MatcherNotInstalled
-    matcher_pattern_first = ["pcre", ]
+    matcher_pattern_first = ["pcre"]
 
     def __init__(self) -> None:
         self._matchers: dict[str, MatcherFunction] = {}
@@ -35,9 +36,7 @@ class MatcherRegistry:
         try:
             self._matchers.pop(name)
         except KeyError:
-            raise self.MatcherNotInstalled(
-                f'No matcher installed for {name}'
-            )
+            raise self.MatcherNotInstalled(f"No matcher installed for {name}")
 
     def _set_default_matcher(self, name: str) -> None:
         """Set the default matching method.
@@ -52,23 +51,15 @@ class MatcherRegistry:
         try:
             self._default_matcher = self._matchers[name]
         except KeyError:
-            raise self.MatcherNotInstalled(
-                f'No matcher installed for {name}'
-            )
+            raise self.MatcherNotInstalled(f"No matcher installed for {name}")
 
     def match(
-        self,
-        data: bytes,
-        pattern: bytes,
-        matcher: str | None = None,
-        matcher_kwargs: dict[str, str] | None = None
+        self, data: bytes, pattern: bytes, matcher: str | None = None, matcher_kwargs: dict[str, str] | None = None
     ) -> bool:
         """Call the matcher."""
         if matcher and not self._matchers.get(matcher):
-            raise self.MatcherNotInstalled(
-                f'No matcher installed for {matcher}'
-            )
-        match_func = self._matchers[matcher or 'glob']
+            raise self.MatcherNotInstalled(f"No matcher installed for {matcher}")
+        match_func = self._matchers[matcher or "glob"]
         if matcher in self.matcher_pattern_first:
             first_arg = bytes_to_str(pattern)
             second_arg = bytes_to_str(data)
@@ -124,12 +115,12 @@ unregister = registry.unregister
 
 def register_glob() -> None:
     """Register glob into default registry."""
-    registry.register('glob', fnmatch)
+    registry.register("glob", fnmatch)
 
 
 def register_pcre() -> None:
     """Register pcre into default registry."""
-    registry.register('pcre', cast(MatcherFunction, rematch))
+    registry.register("pcre", cast("MatcherFunction", rematch))
 
 
 # Register the base matching methods.
@@ -137,8 +128,8 @@ register_glob()
 register_pcre()
 
 # Default matching method is 'glob'
-registry._set_default_matcher('glob')
+registry._set_default_matcher("glob")
 
 # Load entrypoints from installed extensions
-for ep, args in entrypoints('kombu.matchers'):
+for ep, args in entrypoints("kombu.matchers"):
     register(ep.name, *args)

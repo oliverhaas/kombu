@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import threading
 from collections import deque
 from contextlib import contextmanager
@@ -18,10 +17,17 @@ from .log import get_logger
 from .serialization import registry as serializers
 from .utils.uuid import uuid
 
-__all__ = ('Broadcast', 'maybe_declare', 'uuid',
-           'itermessages', 'send_reply',
-           'collect_replies', 'insured', 'drain_consumer',
-           'eventloop')
+__all__ = (
+    "Broadcast",
+    "collect_replies",
+    "drain_consumer",
+    "eventloop",
+    "insured",
+    "itermessages",
+    "maybe_declare",
+    "send_reply",
+    "uuid",
+)
 
 #: Prefetch count can't exceed short.
 PREFETCH_COUNT_MAX = 0xFFFF
@@ -39,8 +45,7 @@ def get_node_id():
 
 
 def generate_oid(node_id, process_id, thread_id, instance):
-    ent = '{:x}-{:x}-{:x}-{:x}'.format(
-        node_id, process_id, thread_id, id(instance))
+    ent = f"{node_id:x}-{process_id:x}-{thread_id:x}-{id(instance):x}"
     try:
         ret = str(uuid3(NAMESPACE_OID, ent))
     except ValueError:
@@ -77,28 +82,20 @@ class Broadcast(Queue):
             of additional keyword arguments supported.
     """
 
-    attrs = Queue.attrs + (('queue', None),)
+    attrs = Queue.attrs + (("queue", None),)
 
-    def __init__(self,
-                 name=None,
-                 queue=None,
-                 unique=False,
-                 auto_delete=True,
-                 exchange=None,
-                 alias=None,
-                 **kwargs):
+    def __init__(self, name=None, queue=None, unique=False, auto_delete=True, exchange=None, alias=None, **kwargs):
         if unique:
-            queue = '{}.{}'.format(queue or 'bcast', uuid())
+            queue = "{}.{}".format(queue or "bcast", uuid())
         else:
-            queue = queue or f'bcast.{uuid()}'
+            queue = queue or f"bcast.{uuid()}"
         super().__init__(
             alias=alias or name,
             queue=queue,
             name=queue,
             auto_delete=auto_delete,
-            exchange=(exchange if exchange is not None
-                      else Exchange(name, type='fanout')),
-            **kwargs
+            exchange=(exchange if exchange is not None else Exchange(name, type="fanout")),
+            **kwargs,
         )
 
 
@@ -123,8 +120,7 @@ def _ensure_channel_is_bound(entity, channel):
     is_bound = entity.is_bound
     if not is_bound:
         if not channel:
-            raise ChannelError(
-                f"Cannot bind channel {channel} to entity {entity}")
+            raise ChannelError(f"Cannot bind channel {channel} to entity {entity}")
         entity = entity.bind(channel)
     return entity
 
@@ -139,8 +135,7 @@ def _maybe_declare(entity, channel):
         # If this was called from the `ensure()` method then the channel could have been invalidated
         # and the correct channel was re-bound to the entity by calling the `entity.revive()` method.
         if not entity.is_bound:
-            raise ChannelError(
-                f"channel is None and entity {entity} not bound.")
+            raise ChannelError(f"channel is None and entity {entity} not bound.")
         channel = entity.channel
 
     declared = ident = None
@@ -151,7 +146,7 @@ def _maybe_declare(entity, channel):
             return False
 
     if not channel.connection:
-        raise RecoverableConnectionError('channel disconnected')
+        raise RecoverableConnectionError("channel disconnected")
     entity.declare(channel=channel)
     if declared is not None and ident:
         declared.add(ident)
@@ -164,10 +159,9 @@ def _imaybe_declare(entity, channel, **retry_policy):
     entity = _ensure_channel_is_bound(entity, channel)
 
     if not entity.channel.connection:
-        raise RecoverableConnectionError('channel disconnected')
+        raise RecoverableConnectionError("channel disconnected")
 
-    return entity.channel.connection.client.ensure(
-        entity, _maybe_declare, **retry_policy)(entity, channel)
+    return entity.channel.connection.client.ensure(entity, _maybe_declare, **retry_policy)(entity, channel)
 
 
 def drain_consumer(consumer, limit=1, timeout=None, callbacks=None):
@@ -180,20 +174,20 @@ def drain_consumer(consumer, limit=1, timeout=None, callbacks=None):
     consumer.callbacks = [on_message] + (callbacks or [])
 
     with consumer:
-        for _ in eventloop(consumer.channel.connection.client,
-                           limit=limit, timeout=timeout, ignore_timeouts=True):
+        for _ in eventloop(consumer.channel.connection.client, limit=limit, timeout=timeout, ignore_timeouts=True):
             try:
                 yield acc.popleft()
             except IndexError:
                 pass
 
 
-def itermessages(conn, channel, queue, limit=1, timeout=None,
-                 callbacks=None, **kwargs):
+def itermessages(conn, channel, queue, limit=1, timeout=None, callbacks=None, **kwargs):
     """Iterator over messages."""
     return drain_consumer(
         conn.Consumer(queues=[queue], channel=channel, **kwargs),
-        limit=limit, timeout=timeout, callbacks=callbacks,
+        limit=limit,
+        timeout=timeout,
+        callbacks=callbacks,
     )
 
 
@@ -228,16 +222,15 @@ def eventloop(conn, limit=None, timeout=None, ignore_timeouts=False):
         :func:`itermessages`, which is an event loop bound to one or more
         consumers, that yields any messages received.
     """
-    for i in limit and range(limit) or count():
+    for i in (limit and range(limit)) or count():
         try:
             yield conn.drain_events(timeout=timeout)
-        except socket.timeout:
+        except TimeoutError:
             if timeout and not ignore_timeouts:  # pragma: no cover
                 raise
 
 
-def send_reply(exchange, req, msg,
-               producer=None, retry=False, retry_policy=None, **props):
+def send_reply(exchange, req, msg, producer=None, retry=False, retry_policy=None, **props):
     """Send reply for request.
 
     Arguments:
@@ -252,22 +245,28 @@ def send_reply(exchange, req, msg,
         **props (Any): Extra properties.
     """
     return producer.publish(
-        msg, exchange=exchange,
-        retry=retry, retry_policy=retry_policy,
-        **dict({'routing_key': req.properties['reply_to'],
-                'correlation_id': req.properties.get('correlation_id'),
-                'serializer': serializers.type_to_name[req.content_type],
-                'content_encoding': req.content_encoding}, **props)
+        msg,
+        exchange=exchange,
+        retry=retry,
+        retry_policy=retry_policy,
+        **dict(
+            {
+                "routing_key": req.properties["reply_to"],
+                "correlation_id": req.properties.get("correlation_id"),
+                "serializer": serializers.type_to_name[req.content_type],
+                "content_encoding": req.content_encoding,
+            },
+            **props,
+        ),
     )
 
 
 def collect_replies(conn, channel, queue, *args, **kwargs):
     """Generator collecting replies from ``queue``."""
-    no_ack = kwargs.setdefault('no_ack', True)
+    no_ack = kwargs.setdefault("no_ack", True)
     received = False
     try:
-        for body, message in itermessages(conn, channel, queue,
-                                          *args, **kwargs):
+        for body, message in itermessages(conn, channel, queue, *args, **kwargs):
             if not no_ack:
                 message.ack()
             received = True
@@ -279,7 +278,9 @@ def collect_replies(conn, channel, queue, *args, **kwargs):
 
 def _ensure_errback(exc, interval):
     logger.error(
-        'Connection error: %r. Retry in %ss\n', exc, interval,
+        "Connection error: %r. Retry in %ss\n",
+        exc,
+        interval,
         exc_info=True,
     )
 
@@ -345,8 +346,7 @@ def insured(pool, fun, args, kwargs, errback=None, on_revive=None, **opts):
         # reset on revival.
         channel = conn.default_channel
         revive = partial(revive_connection, conn, on_revive=on_revive)
-        insured = conn.autoretry(fun, channel, errback=errback,
-                                 on_revive=revive, **opts)
+        insured = conn.autoretry(fun, channel, errback=errback, on_revive=revive, **opts)
         retval, _ = insured(*args, **dict(kwargs, connection=conn))
         return retval
 
@@ -433,8 +433,7 @@ class QoS:
         with self._mutex:
             if self.value:
                 self.value -= n
-                if self.value < 1:
-                    self.value = 1
+                self.value = max(self.value, 1)
         return self.value
 
     def set(self, pcount):
@@ -442,10 +441,9 @@ class QoS:
         if pcount != self.prev:
             new_value = pcount
             if pcount > PREFETCH_COUNT_MAX:
-                logger.warning('QoS: Disabled: prefetch_count exceeds %r',
-                               PREFETCH_COUNT_MAX)
+                logger.warning("QoS: Disabled: prefetch_count exceeds %r", PREFETCH_COUNT_MAX)
                 new_value = 0
-            logger.debug('basic.qos: prefetch_count->%s', new_value)
+            logger.debug("basic.qos: prefetch_count->%s", new_value)
             self.callback(prefetch_count=new_value)
             self.prev = pcount
         return pcount
