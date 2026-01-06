@@ -17,3 +17,4 @@
     pools
     serialization
     failover
+    transports

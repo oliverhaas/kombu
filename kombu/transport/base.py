@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import errno
 import socket
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from amqp.exceptions import RecoverableConnectionError
 
@@ -105,6 +105,25 @@ class StdChannel:
     def prepare_queue_arguments(self, arguments, **kwargs):
         return arguments
 
+    def setup_native_delayed_delivery(self, queues: list[str]) -> None:
+        """Initialize native delayed delivery handling for the given queues.
+
+        Called by consumer bootstep when the transport supports native
+        delayed delivery. Override in subclasses that support this feature.
+
+        Arguments:
+            queues: List of queue names to set up delayed delivery for.
+        """
+        pass
+
+    def teardown_native_delayed_delivery(self) -> None:
+        """Clean up native delayed delivery handling.
+
+        Called by consumer bootstep when shutting down. Override in
+        subclasses that support native delayed delivery.
+        """
+        pass
+
     def __enter__(self):
         return self
 
@@ -178,6 +197,11 @@ class Transport:
 
     #: Name of driver library (e.g. 'py-amqp', 'redis').
     driver_name = 'N/A'
+
+    #: Set to True if this transport handles eta/countdown natively.
+    #: When enabled, delayed messages are stored by the broker instead
+    #: of being held in worker memory until their ETA arrives.
+    supports_native_delayed_delivery: ClassVar[bool] = False
 
     __reader = None
 

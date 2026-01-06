@@ -49,6 +49,16 @@ class test_StdChannel:
     def test_interface_after_reply_message_received(self):
         assert StdChannel().after_reply_message_received(Queue('foo')) is None
 
+    def test_setup_native_delayed_delivery_noop(self):
+        """Default setup_native_delayed_delivery is a no-op."""
+        channel = StdChannel()
+        channel.setup_native_delayed_delivery(['queue1', 'queue2'])  # Should not raise
+
+    def test_teardown_native_delayed_delivery_noop(self):
+        """Default teardown_native_delayed_delivery is a no-op."""
+        channel = StdChannel()
+        channel.teardown_native_delayed_delivery()  # Should not raise
+
 
 class test_Message:
 
@@ -157,6 +167,11 @@ class test_interface:
 
     def test_manager(self):
         assert Transport(None).manager
+
+    def test_supports_native_delayed_delivery_default(self):
+        """Default transport does not support native delayed delivery."""
+        assert Transport.supports_native_delayed_delivery is False
+        assert Transport(None).supports_native_delayed_delivery is False
 
 
 class test_Management:
