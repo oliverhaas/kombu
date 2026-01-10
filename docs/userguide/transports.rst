@@ -73,32 +73,10 @@ To implement native delayed delivery in a custom transport:
        class MyTransport(Transport):
            supports_native_delayed_delivery = True
 
-2. Implement the channel methods in your ``Channel`` class:
-
-   .. code-block:: python
-
-       from kombu.transport.base import StdChannel
-
-       class MyChannel(StdChannel):
-
-           def setup_native_delayed_delivery(self, queues):
-               """Initialize delayed delivery for the given queues.
-
-               Called when consumers start. Use this to set up any
-               necessary broker structures (e.g., delay queues,
-               sorted sets, etc.).
-               """
-               # Your implementation here
-               pass
-
-           def teardown_native_delayed_delivery(self):
-               """Clean up delayed delivery handling.
-
-               Called when consumers stop. Use this to clean up
-               any resources created during setup.
-               """
-               # Your implementation here
-               pass
+2. Implement the delayed delivery logic in your ``Channel`` class, managing
+   the lifecycle in ``__init__`` and ``close()``. See the GCP Pub/Sub
+   transport for a reference pattern using a shared background thread with
+   a class-level channel counter.
 
 **Transport Support**
 
