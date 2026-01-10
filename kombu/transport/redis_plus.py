@@ -73,6 +73,7 @@ from collections import namedtuple
 from contextlib import contextmanager
 from importlib.metadata import version
 from queue import Empty
+from threading import Lock
 
 from packaging.version import Version
 
@@ -111,6 +112,28 @@ except ImportError:  # pragma: no cover
 
 logger = get_logger('kombu.transport.redis_plus')
 crit, warning, debug = logger.critical, logger.warning, logger.debug
+
+
+class AtomicCounter:
+    """Threadsafe counter.
+
+    Returns the value after inc/dec operations.
+    """
+
+    def __init__(self, initial=0):
+        self._value = initial
+        self._lock = Lock()
+
+    def inc(self, n=1):
+        with self._lock:
+            self._value += n
+            return self._value
+
+    def dec(self, n=1):
+        with self._lock:
+            self._value -= n
+            return self._value
+
 
 # Default configuration
 DEFAULT_PORT = 6379
@@ -677,9 +700,12 @@ class Channel(virtual.Channel):
     _async_pool = None
     _pool = None
 
-    # Background thread for delayed/timeout message processing
-    _requeue_thread = None
-    _requeue_stop_event = None
+    # Class-level background thread for delayed/timeout message processing
+    # Shared across all channels, started when first channel created,
+    # stopped when last channel closed (following GCP Pub/Sub pattern)
+    _requeue_thread: threading.Thread = None
+    _requeue_stop_event = threading.Event()
+    _n_channels = AtomicCounter()
 
     # Lua script SHA
     _enqueue_script_sha = None
@@ -740,6 +766,18 @@ class Channel(virtual.Channel):
 
         if register_after_fork is not None:
             register_after_fork(self, _after_fork_cleanup_channel)
+
+        # Start background thread for delayed/visibility timeout processing
+        # when first channel is created (class-level, shared across channels)
+        if Channel._n_channels.inc() == 1:
+            Channel._requeue_stop_event.clear()
+            Channel._requeue_thread = threading.Thread(
+                target=self._requeue_loop,
+                daemon=True,
+                name='redis-plus-requeue',
+            )
+            Channel._requeue_thread.start()
+            debug('Started native delayed delivery background thread')
 
     def _register_scripts(self):
         """Register Lua scripts with Redis."""
@@ -1120,41 +1158,11 @@ class Channel(virtual.Channel):
                 return []
             return [tuple(bytes_to_str(val).split(self.sep)) for val in values]
 
-    # Native delayed delivery support
-
-    def setup_native_delayed_delivery(self, queues: list[str]) -> None:
-        """Start background thread for delayed/timeout message processing.
-
-        Called by consumer bootstep when starting.
-        """
-        if self._requeue_thread is not None:
-            return  # Already running
-
-        self._requeue_stop_event = threading.Event()
-        self._requeue_thread = threading.Thread(
-            target=self._requeue_loop,
-            daemon=True,
-            name='redis-plus-requeue',
-        )
-        self._requeue_thread.start()
-        debug('Started native delayed delivery background thread')
-
-    def teardown_native_delayed_delivery(self) -> None:
-        """Stop background thread for delayed/timeout message processing.
-
-        Called by consumer bootstep when stopping.
-        """
-        if self._requeue_stop_event:
-            self._requeue_stop_event.set()
-        if self._requeue_thread:
-            self._requeue_thread.join(timeout=5)
-            self._requeue_thread = None
-            self._requeue_stop_event = None
-        debug('Stopped native delayed delivery background thread')
+    # Background processing for delayed delivery and visibility timeout
 
     def _requeue_loop(self):
         """Background loop to process delayed and timed-out messages."""
-        while not self._requeue_stop_event.is_set():
+        while not Channel._requeue_stop_event.is_set():
             try:
                 count = self._enqueue_due_messages()
                 if count:
@@ -1163,7 +1171,7 @@ class Channel(virtual.Channel):
                 warning('Error in requeue loop: %r', exc, exc_info=True)
 
             # Wait for next check interval or stop event
-            self._requeue_stop_event.wait(self.requeue_check_interval)
+            Channel._requeue_stop_event.wait(self.requeue_check_interval)
 
     def _enqueue_due_messages(self) -> int:
         """Run Lua script to enqueue messages whose time has come."""
@@ -1191,8 +1199,13 @@ class Channel(virtual.Channel):
     def close(self):
         self._closing = True
 
-        # Stop background thread
-        self.teardown_native_delayed_delivery()
+        # Stop background thread when last channel closes
+        if not Channel._n_channels.dec():
+            Channel._requeue_stop_event.set()
+            if Channel._requeue_thread:
+                Channel._requeue_thread.join(timeout=5)
+                Channel._requeue_thread = None
+            debug('Stopped native delayed delivery background thread')
 
         if self._in_poll:
             try:

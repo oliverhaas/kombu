@@ -547,45 +547,81 @@ class test_QoS:
 
 
 class test_native_delayed_delivery:
-    """Test native delayed delivery interface."""
+    """Test native delayed delivery - thread lifecycle in __init__/close()."""
 
     def setup_method(self):
-        self.connection = Connection(transport=Transport)
-        self.channel = self.connection.default_channel
-
-    def teardown_method(self):
-        self.channel.teardown_native_delayed_delivery()
+        # Reset class-level state on the BASE class before each test to ensure isolation
+        # The redis_plus.Channel.__init__ references 'Channel' which resolves to
+        # redis_plus.Channel in that module's scope, not our mock subclass.
         Client.queues = {}
         Client.sets = defaultdict(set)
         Client.hashes = defaultdict(dict)
+        redis_plus.Channel._n_channels = redis_plus.AtomicCounter()
+        redis_plus.Channel._requeue_thread = None
+        redis_plus.Channel._requeue_stop_event = redis_plus.threading.Event()
 
-    def test_setup_starts_background_thread(self):
-        """Test setup_native_delayed_delivery starts background thread."""
-        self.channel.setup_native_delayed_delivery(['queue1'])
+    def teardown_method(self):
+        # Ensure any remaining threads are stopped
+        if redis_plus.Channel._requeue_thread and redis_plus.Channel._requeue_thread.is_alive():
+            redis_plus.Channel._requeue_stop_event.set()
+            redis_plus.Channel._requeue_thread.join(timeout=2)
+        # Reset state
+        Client.queues = {}
+        Client.sets = defaultdict(set)
+        Client.hashes = defaultdict(dict)
+        redis_plus.Channel._n_channels = redis_plus.AtomicCounter()
+        redis_plus.Channel._requeue_thread = None
+        redis_plus.Channel._requeue_stop_event = redis_plus.threading.Event()
 
-        assert self.channel._requeue_thread is not None
-        assert self.channel._requeue_thread.is_alive()
-        assert self.channel._requeue_stop_event is not None
+    def test_thread_starts_on_first_channel(self):
+        """Test background thread starts when first channel is created."""
+        connection = Connection(transport=Transport)
+        channel = connection.default_channel
 
-    def test_teardown_stops_background_thread(self):
-        """Test teardown_native_delayed_delivery stops background thread."""
-        self.channel.setup_native_delayed_delivery(['queue1'])
-        thread = self.channel._requeue_thread
+        # Check on the base redis_plus.Channel class (where thread is managed)
+        assert redis_plus.Channel._requeue_thread is not None
+        assert redis_plus.Channel._requeue_thread.is_alive()
 
-        self.channel.teardown_native_delayed_delivery()
+        # Cleanup
+        channel.close()
 
+    def test_thread_stops_on_last_channel_close(self):
+        """Test background thread stops when last channel closes."""
+        connection = Connection(transport=Transport)
+        channel = connection.default_channel
+        thread = redis_plus.Channel._requeue_thread
+
+        assert thread is not None  # Ensure thread was created
+
+        channel.close()
+
+        # Thread should be stopped
         assert not thread.is_alive()
-        assert self.channel._requeue_thread is None
+        assert redis_plus.Channel._requeue_thread is None
 
-    def test_setup_idempotent(self):
-        """Test calling setup twice doesn't create multiple threads."""
-        self.channel.setup_native_delayed_delivery(['queue1'])
-        thread1 = self.channel._requeue_thread
+    def test_thread_shared_across_channels(self):
+        """Test single thread is shared across multiple channels."""
+        connection1 = Connection(transport=Transport)
+        channel1 = connection1.default_channel
+        thread1 = redis_plus.Channel._requeue_thread
 
-        self.channel.setup_native_delayed_delivery(['queue2'])
-        thread2 = self.channel._requeue_thread
+        assert thread1 is not None  # Ensure thread was created
 
+        connection2 = Connection(transport=Transport)
+        channel2 = connection2.default_channel
+        thread2 = redis_plus.Channel._requeue_thread
+
+        # Same thread instance
         assert thread1 is thread2
+        assert thread1.is_alive()
+
+        # Close first channel - thread should still run
+        channel1.close()
+        assert thread1.is_alive()
+
+        # Close second channel - thread should stop
+        channel2.close()
+        assert not thread1.is_alive()
 
 
 class test_transport_registration:

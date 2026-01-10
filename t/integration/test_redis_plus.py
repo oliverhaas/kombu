@@ -238,14 +238,14 @@ class test_RedisPlusNativeDelayedDelivery:
             transport = conn.transport
             assert transport.supports_native_delayed_delivery is True
 
-    def test_channel_has_setup_teardown_methods(self, delayed_connection):
-        """Test that channel has setup/teardown methods for delayed delivery."""
+    def test_background_thread_starts_on_channel_creation(self, delayed_connection):
+        """Test that background thread starts automatically on channel creation."""
+        from kombu.transport.redis_plus import Channel
         with delayed_connection as conn:
-            channel = conn.default_channel
-            assert hasattr(channel, 'setup_native_delayed_delivery')
-            assert hasattr(channel, 'teardown_native_delayed_delivery')
-            assert callable(channel.setup_native_delayed_delivery)
-            assert callable(channel.teardown_native_delayed_delivery)
+            _channel = conn.default_channel  # noqa: F841 - accessing triggers init
+            # Thread should be running after channel creation
+            assert Channel._requeue_thread is not None
+            assert Channel._requeue_thread.is_alive()
 
 
 @pytest.mark.env('redis')
