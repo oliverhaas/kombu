@@ -124,7 +124,7 @@ class Producer:
                 content_type=None, content_encoding=None, serializer=None,
                 headers=None, compression=None, exchange=None, retry=False,
                 retry_policy=None, declare=None, expiration=None, timeout=None,
-                confirm_timeout=None,
+                confirm_timeout=None, eta=None,
                 **properties):
         """Publish message to the specified exchange.
 
@@ -158,6 +158,11 @@ class Producer:
                 for message to publish.
             confirm_timeout (float): Set confirm timeout to wait maximum timeout second
                 for message to confirm publishing if the channel is set to confirm publish mode.
+            eta (float): Absolute Unix timestamp (seconds since epoch) specifying
+                when the message should become available for delivery. Used by
+                transports that support native delayed delivery
+                (``transport.supports_native_delayed_delivery = True``).
+                Default is None (deliver immediately).
             **properties (Any): Additional message properties, see AMQP spec.
         """
         _publish = self._publish
@@ -174,6 +179,9 @@ class Producer:
 
         if expiration is not None:
             properties['expiration'] = str(int(expiration * 1000))
+
+        if eta is not None:
+            properties['eta'] = eta
 
         body, content_type, content_encoding = self._prepare(
             body, serializer, content_type, content_encoding,

@@ -30,9 +30,9 @@ higher-level libraries like Celery interact with them.
 Native Delayed Delivery
 -----------------------
 
-Some transports support handling delayed messages (messages with ``eta`` or
-``countdown``) natively within the broker, rather than requiring workers to
-hold messages in memory until their scheduled time.
+Some transports support handling delayed messages natively within the broker,
+rather than requiring workers to hold messages in memory until their scheduled
+time.
 
 **Checking for Support**
 
@@ -60,6 +60,51 @@ When a transport supports native delayed delivery:
 - **Better load distribution**: The broker can deliver messages to any
   available worker when the delay expires.
 
+**Message Property: eta**
+
+The ``eta`` (estimated time of arrival) property specifies when a message
+should become available for delivery. It is stored in the message properties
+alongside ``priority``:
+
+.. code-block:: python
+
+    message = {
+        'body': ...,
+        'properties': {
+            'priority': 0,
+            'eta': 1704067200.0,  # Unix timestamp (float, seconds)
+            'delivery_tag': ...,
+        },
+        'headers': {...}
+    }
+
+The ``eta`` value is an **absolute Unix timestamp** (seconds since epoch) as
+a float. This is the same format used by Celery's ``eta`` parameter.
+
+When publishing with Celery, the ``eta`` or ``countdown`` task options are
+converted to this property. For direct Kombu usage:
+
+.. code-block:: python
+
+    import time
+    from kombu import Connection, Producer, Queue
+
+    queue = Queue('tasks')
+
+    with Connection('redis+plus://localhost') as conn:
+        producer = Producer(conn)
+
+        # Deliver in 60 seconds
+        eta = time.time() + 60
+
+        producer.publish(
+            {'task': 'example'},
+            exchange=queue.exchange,
+            routing_key=queue.routing_key,
+            declare=[queue],
+            eta=eta,  # Producer converts this to properties['eta']
+        )
+
 **For Transport Authors**
 
 To implement native delayed delivery in a custom transport:
@@ -73,10 +118,16 @@ To implement native delayed delivery in a custom transport:
        class MyTransport(Transport):
            supports_native_delayed_delivery = True
 
-2. Implement the delayed delivery logic in your ``Channel`` class, managing
-   the lifecycle in ``__init__`` and ``close()``. See the GCP Pub/Sub
-   transport for a reference pattern using a shared background thread with
-   a class-level channel counter.
+2. In your ``Channel._put()`` method, check for ``message['properties'].get('eta')``.
+   If present and in the future, store the message for delayed delivery instead
+   of making it immediately available.
+
+3. Implement a mechanism to make delayed messages available when their ``eta``
+   arrives. This could be:
+
+   - A background thread/task that periodically checks for due messages
+   - Integration with broker-native scheduling features
+   - Use of the event loop via ``loop.call_repeatedly()``
 
 **Transport Support**
 

@@ -148,6 +148,15 @@ class test_Producer:
         properties = p._channel.prepare_message.call_args[0][5]
         assert properties['expiration'] == '10000'
 
+    def test_publish_with_eta(self):
+        p = self.connection.Producer()
+        p.channel = Mock()
+        p.channel.connection.client.declared_entities = set()
+        eta_timestamp = 1704067200.0
+        p.publish('hello', exchange=Exchange('foo'), eta=eta_timestamp)
+        properties = p._channel.prepare_message.call_args[0][5]
+        assert properties['eta'] == eta_timestamp
+
     def test_publish_with_timeout(self):
         p = self.connection.Producer()
         p.channel = Mock()
