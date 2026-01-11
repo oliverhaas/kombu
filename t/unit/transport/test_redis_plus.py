@@ -399,8 +399,8 @@ class test_Channel:
 
         message = {
             'body': 'delayed body',
-            'properties': {'priority': 5, 'delivery_tag': 'delayed_tag'},
-            'headers': {'eta': future_eta},
+            'properties': {'priority': 5, 'delivery_tag': 'delayed_tag', 'eta': future_eta},
+            'headers': {},
         }
         self.channel._put('testqueue', message)
 

@@ -846,22 +846,13 @@ class Channel(virtual.Channel):
         priority = self._get_message_priority(message, reverse=False)
         timestamp_ms = _current_time_ms()
 
-        # Check for ETA/countdown (delayed delivery)
+        # Check for ETA (delayed delivery) - eta is in properties as Unix timestamp
         eta_ms = None
-        headers = message.get('headers', {})
-        if headers.get('eta'):
-            # ETA is an ISO timestamp string or unix timestamp
-            eta = headers['eta']
-            if isinstance(eta, str):
-                # Parse ISO format timestamp
-                import datetime
-                try:
-                    dt = datetime.datetime.fromisoformat(eta.replace('Z', '+00:00'))
-                    eta_ms = int(dt.timestamp() * 1000)
-                except (ValueError, AttributeError):
-                    pass
-            elif isinstance(eta, (int, float)):
-                eta_ms = int(eta * 1000)
+        properties = message.get('properties', {})
+        eta = properties.get('eta')
+        if eta is not None:
+            # eta is a Unix timestamp (float, seconds since epoch)
+            eta_ms = int(eta * 1000)
 
         # Calculate score - delayed messages get future timestamp in score
         if eta_ms and eta_ms > timestamp_ms:
