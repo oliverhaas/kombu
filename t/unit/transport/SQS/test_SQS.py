@@ -1293,6 +1293,98 @@ class test_Channel:
         assert not basic_reject_mock.called
         assert not basic_ack_mock.called
 
+    def _append_delivered(self, delivery_tag, **delivery_info):
+        """Put a message in the QoS delivered state, as _get would."""
+        message = Mock()
+        message.delivery_info = dict({
+            'sqs_message': {'ReceiptHandle': delivery_tag},
+            'sqs_queue': 'testing_queue',
+        }, **delivery_info)
+        self.channel.qos.append(message, delivery_tag)
+
+    @staticmethod
+    def _delete_error(code):
+        return ClientError({'Error': {'Code': code, 'Message': code}},
+                           'DeleteMessage')
+
+    @patch('kombu.transport.virtual.base.Channel.basic_reject')
+    def test_basic_reject_without_requeue_deletes_message(self, base_reject):
+        """requeue=False means the message must not be redelivered."""
+        self._append_delivered('1')
+        self.channel.sqs().delete_message = Mock()
+
+        self.channel.basic_reject('1', requeue=False)
+
+        self.sqs_conn_mock.delete_message.assert_called_with(
+            QueueUrl='testing_queue', ReceiptHandle='1')
+        base_reject.assert_called_with('1', requeue=False)
+
+    @patch('kombu.transport.virtual.base.Channel.basic_reject')
+    def test_basic_reject_with_requeue_keeps_message(self, base_reject):
+        """requeue=True must leave the message on the queue."""
+        self._append_delivered('1')
+        self.channel.sqs().delete_message = Mock()
+
+        self.channel.basic_reject('1', requeue=True)
+
+        assert not self.sqs_conn_mock.delete_message.called
+        base_reject.assert_called_with('1', requeue=True)
+
+    @patch('kombu.transport.virtual.base.Channel.basic_reject')
+    def test_basic_reject_without_sqs_message(self, base_reject):
+        """A message with no SQS metadata is left to the base class."""
+        message = Mock()
+        message.delivery_info = {'sqs_queue': 'testing_queue'}
+        self.channel.qos.append(message, '1')
+        self.channel.sqs().delete_message = Mock()
+
+        self.channel.basic_reject('1', requeue=False)
+
+        assert not self.sqs_conn_mock.delete_message.called
+        base_reject.assert_called_with('1', requeue=False)
+
+    @patch('kombu.transport.virtual.base.Channel.basic_reject')
+    def test_basic_reject_releases_tag_when_delete_fails(self, base_reject):
+        """An expired receipt handle must still release the delivery tag."""
+        self._append_delivered('2')
+        self.channel.sqs().delete_message = Mock(
+            side_effect=self._delete_error('InvalidParameterValue'))
+
+        self.channel.basic_reject('2', requeue=False)
+
+        base_reject.assert_called_with('2', requeue=False)
+
+    def test_basic_reject_access_denied(self):
+        """Access errors surface, as they do for basic_ack."""
+        self._append_delivered('2')
+        self.channel.sqs().delete_message = Mock(
+            side_effect=self._delete_error('AccessDenied'))
+
+        with pytest.raises(SQS.AccessDeniedQueueException):
+            self.channel.basic_reject('2', requeue=False)
+
+    def test_basic_reject_honours_backoff_policy(self):
+        """A backoff policy redelivers the message, so it is not deleted."""
+        connection = Connection(transport=SQS.Transport, transport_options={
+            'predefined_queues': example_predefined_queues,
+        })
+        channel = connection.channel()
+        channel.qos.apply_backoff_policy = Mock()
+        channel.sqs().delete_message = Mock()
+
+        message = Mock()
+        message.delivery_info = {
+            'routing_key': 'queue-1',
+            'sqs_message': {'ReceiptHandle': 'tag'},
+            'sqs_queue': 'testing_queue',
+        }
+        channel.qos._delivered['tag'] = message
+
+        channel.basic_reject('tag', requeue=False)
+
+        assert not channel.sqs().delete_message.called
+        channel.qos.apply_backoff_policy.assert_called_once()
+
     def test_reject_when_no_predefined_queues(self):
         connection = Connection(transport=SQS.Transport, transport_options={})
         channel = connection.channel()
