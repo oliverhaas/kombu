@@ -153,3 +153,9 @@ class test_Client:
         client2 = http.get_client(hub)
         assert client2 is client
         assert client2.hub is hub
+
+    def test_get_client_after_hub_reset(self, hub):
+        pytest.importorskip('pycurl')
+        http.get_client(hub)
+        hub.reset()
+        http.get_client(hub).perform('http://localhost/')

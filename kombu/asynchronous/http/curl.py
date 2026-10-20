@@ -68,6 +68,7 @@ class CurlClient(BaseClient):
         for _curl in self._curls:
             _curl.close()
         self._multi.close()
+        super().close()
 
     def add_request(self, request):
         self._pending.append(request)

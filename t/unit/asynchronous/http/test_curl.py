@@ -72,6 +72,12 @@ class test_CurlClient:
                 _curl.close.assert_called_with()
             x._multi.close.assert_called_with()
 
+    def test_close_unregisters_from_hub_on_close(self, hub):
+        with patch('kombu.asynchronous.http.curl.pycurl'):
+            x = self.Client(hub)
+            hub.reset()
+            assert x.close not in hub.on_close
+
     def test_add_request(self):
         with patch('kombu.asynchronous.http.curl.pycurl'):
             x = self.Client()
