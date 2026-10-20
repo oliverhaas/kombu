@@ -333,6 +333,8 @@ class Hub:
         if self._waker is not None:
             self._waker.close()
             self._waker = None
+        if _current_loop is self:
+            set_event_loop(None)
 
     def _close(self):
         [self._unregister(fd) for fd in self.readers]
@@ -341,7 +343,8 @@ class Hub:
         self.writers.clear()
         self.consolidate.clear()
         self._close_poller()
-        for callback in self.on_close:
+        # A copy, as a callback can remove itself (BaseClient.close does).
+        for callback in list(self.on_close):
             callback(self)
 
         # Complete remaining todo before Hub close
@@ -352,10 +355,6 @@ class Hub:
         todos = self._pop_ready()
         for item in todos:
             item()
-
-        # Clear global event loop variable if this hub is the current loop
-        if _current_loop is self:
-            set_event_loop(None)
 
     def _discard(self, fd):
         fd = fileno(fd)

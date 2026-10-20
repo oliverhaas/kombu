@@ -616,6 +616,17 @@ class test_Hub:
         finally:
             set_event_loop(prev_loop)
 
+    def test_reset_keeps_global_event_loop(self):
+        prev_loop = get_event_loop()
+        try:
+            hub = Hub()
+            set_event_loop(hub)
+            hub.reset()
+            assert get_event_loop() is hub
+            hub.close()
+        finally:
+            set_event_loop(prev_loop)
+
 
 def call_soon_from_thread(hub, callback):
     with ThreadPoolExecutor(max_workers=1) as executor:
